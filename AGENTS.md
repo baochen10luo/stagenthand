@@ -1,7 +1,7 @@
 # StagentHand — PROJECT KNOWLEDGE BASE
 
 **Binary**: `shand`
-**Module**: `github.com/castle-studio-work/stagenthand`
+**Module**: `github.com/baochen10luo/stagenthand`
 **Language**: Go 1.22+
 
 ---

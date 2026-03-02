@@ -1,0 +1,29 @@
+# Build
+shand
+dist/
+
+# Config & secrets
+~/.shand/
+*.env
+.env
+config.local.yaml
+
+# DB
+*.db
+*.db-journal
+
+# Runtime
+props.json
+output/
+*.mp4
+
+# Go
+vendor/
+*.test
+
+# Node (remotion-template)
+node_modules/
+.next/
+
+# OS
+.DS_Store

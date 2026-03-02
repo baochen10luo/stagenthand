@@ -1,6 +1,6 @@
-module github.com/castle-studio-work/stagenthand
+module github.com/baochen10luo/stagenthand
 
-go 1.25.0
+go 1.22
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
