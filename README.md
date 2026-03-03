@@ -1,5 +1,7 @@
 # StagentHand (`shand`)
 
+![StagentHand Banner](assets/banner.png)
+
 > CLI-first AI 短劇製作 Pipeline — 讓 AI 員工在幕後讓製作動起來
 
 ---
