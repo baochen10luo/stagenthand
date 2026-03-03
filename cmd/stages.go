@@ -24,7 +24,7 @@ func runStage(systemPrompt string) func(cmd *cobra.Command, args []string) error
 			provider = cfg.LLM.Provider
 		}
 
-		client, err := llm.NewClient(provider, dryRun)
+		client, err := llm.NewClient(provider, dryRun, cfg)
 		if err != nil {
 			return fmt.Errorf("llm client factory: %w", err)
 		}

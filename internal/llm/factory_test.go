@@ -3,47 +3,51 @@ package llm_test
 import (
 	"testing"
 
+	"github.com/baochen10luo/stagenthand/config"
 	"github.com/baochen10luo/stagenthand/internal/llm"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestNewClient(t *testing.T) {
 	t.Parallel()
 
-	t.Run("dry-run returns MockClient", func(t *testing.T) {
-		client, err := llm.NewClient("anything", true)
-		require.NoError(t, err)
-		require.NotNil(t, client)
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			APIKey: "test",
+		},
+	}
 
-		// dry-run mock must return dry-run-ok payload
-		out, err := client.GenerateTransformation(t.Context(), "prompt", []byte("input"))
+	t.Run("dry run", func(t *testing.T) {
+		client, err := llm.NewClient("gemini", true, cfg)
 		assert.NoError(t, err)
-		assert.Contains(t, string(out), "dry-run-ok")
+		_, ok := client.(*llm.MockClient)
+		assert.True(t, ok)
 	})
 
-	t.Run("provider=mock returns MockClient", func(t *testing.T) {
-		client, err := llm.NewClient("mock", false)
-		require.NoError(t, err)
-		require.NotNil(t, client)
+	t.Run("mock provider", func(t *testing.T) {
+		client, err := llm.NewClient("mock", false, cfg)
+		assert.NoError(t, err)
+		_, ok := client.(*llm.MockClient)
+		assert.True(t, ok)
 	})
 
-	t.Run("provider=nova returns NovaClient stub", func(t *testing.T) {
-		client, err := llm.NewClient("nova", false)
-		require.NoError(t, err)
-		require.NotNil(t, client)
+	t.Run("gemini provider", func(t *testing.T) {
+		client, err := llm.NewClient("gemini", false, cfg)
+		assert.NoError(t, err)
+		_, ok := client.(*llm.GeminiClient)
+		assert.True(t, ok)
 	})
 
-	t.Run("provider=amazon-nova alias works", func(t *testing.T) {
-		client, err := llm.NewClient("amazon-nova", false)
-		require.NoError(t, err)
-		require.NotNil(t, client)
+	t.Run("openai provider", func(t *testing.T) {
+		client, err := llm.NewClient("openai", false, cfg)
+		assert.NoError(t, err)
+		_, ok := client.(*llm.GeminiClient) // maps to GeminiClient internally
+		assert.True(t, ok)
 	})
 
-	t.Run("unknown provider returns error", func(t *testing.T) {
-		client, err := llm.NewClient("unknown-provider", false)
-		assert.Error(t, err)
+	t.Run("unknown provider", func(t *testing.T) {
+		client, err := llm.NewClient("unknown", false, nil)
+		assert.ErrorContains(t, err, "not implemented")
 		assert.Nil(t, client)
-		assert.Contains(t, err.Error(), "not implemented")
 	})
 }

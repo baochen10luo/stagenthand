@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
 	"github.com/baochen10luo/stagenthand/internal/image"
@@ -43,10 +44,19 @@ func runPanelToImage(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("image generation failed: %w", err)
 	}
 
-	// Output logic goes here -- in dry-run, we might still spit out the modified JSON block.
-	// For now, let's pretend we saved it and update the URL.
-	panel.ImageURL = "mocked_path.png"
-	if len(imgBytes) == 0 {
+	// Actual writing to disk
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output dir: %w", err)
+	}
+
+	if len(imgBytes) > 0 {
+		fileName := fmt.Sprintf("scene_%d_panel_%d.png", panel.SceneNumber, panel.PanelNumber)
+		filePath := filepath.Join(outputDir, fileName)
+		if err := os.WriteFile(filePath, imgBytes, 0644); err != nil {
+			return fmt.Errorf("writing image to disk: %w", err)
+		}
+		panel.ImageURL = filePath
+	} else {
 		panel.ImageURL = "error.png"
 	}
 
