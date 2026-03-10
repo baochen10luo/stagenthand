@@ -1,0 +1,9 @@
+model_list:
+  - model_name: bedrock-nova-pro
+    litellm_params:
+      model: bedrock/amazon.nova-pro-v1:0
+      aws_region_name: us-east-1
+  - model_name: bedrock-nova-canvas
+    litellm_params:
+      model: bedrock/amazon.nova-canvas-v1:0
+      aws_region_name: us-east-1

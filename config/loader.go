@@ -32,7 +32,10 @@ type LLMConfig struct {
 // ImageConfig holds image-generation provider settings.
 type ImageConfig struct {
 	Provider         string `mapstructure:"provider"`
-	APIKey           string `mapstructure:"api_key"`
+	Model            string `mapstructure:"model"`
+	APIKey           string `mapstructure:"api_key"`    // Alias for AccessKeyID in AWS
+	SecretKey        string `mapstructure:"secret_key"`
+	Region           string `mapstructure:"region"`
 	Width            int    `mapstructure:"width"`
 	Height           int    `mapstructure:"height"`
 	CharacterRefsDir string `mapstructure:"character_refs_dir"`
