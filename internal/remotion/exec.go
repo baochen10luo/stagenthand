@@ -23,10 +23,11 @@ func (c *CLIExecutor) Render(ctx context.Context, templatePath string, compositi
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "npx", "remotion", "render", "src/index.ts", composition, outputPath, "--props", propsPath)
+	cmd := exec.CommandContext(ctx, "npx", "--no-install", "remotion", "render", "src/index.ts", composition, outputPath, "--props", propsPath)
 	cmd.Dir = templatePath
-	cmd.Stdout = os.Stderr // pipe remotion stdout to shand stderr so it doesn't pollute JSON
+	cmd.Stdout = os.Stderr // pipe remotion stdout to shand stderr
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to run remotion render: %w", err)
@@ -43,10 +44,11 @@ func (c *CLIExecutor) Preview(ctx context.Context, templatePath string, composit
 	}
 
 	// For studio we don't pass composition to enforce one, studio handles interactive selection. But we pass props.
-	cmd := exec.CommandContext(ctx, "npx", "remotion", "studio", "src/index.ts", "--props", propsPath)
+	cmd := exec.CommandContext(ctx, "npx", "--no-install", "remotion", "studio", "src/index.ts", "--props", propsPath)
 	cmd.Dir = templatePath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to run remotion studio: %w", err)

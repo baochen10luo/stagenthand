@@ -2,6 +2,7 @@ import {
   AbsoluteFill,
   Img,
   interpolate,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -53,7 +54,7 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel }) => {
           }}
         >
           <Img
-            src={panel.image_url}
+            src={staticFile(panel.image_url)}
             style={{
               width: "100%",
               height: "100%",

@@ -43,10 +43,12 @@ var remotionRenderCmd = &cobra.Command{
 		// Ensure absolute paths
 		absProps, _ := filepath.Abs(propsFile)
 		absOutput, _ := filepath.Abs(renderOutput)
-		templatePath, _ := filepath.Abs(cfg.Remotion.TemplatePath)
-		if templatePath == "" {
-			templatePath = "./remotion-template"
+		
+		rawTemplatePath := cfg.Remotion.TemplatePath
+		if rawTemplatePath == "" {
+			rawTemplatePath = "./remotion-template"
 		}
+		templatePath, _ := filepath.Abs(rawTemplatePath)
 
 		composition := cfg.Remotion.Composition
 		if composition == "" {
