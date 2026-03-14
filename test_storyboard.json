@@ -1,0 +1,46 @@
+{
+  "project_id": "smoke-test-001",
+  "episode": 1,
+  "scenes": [
+    {
+      "number": 1,
+      "description": "咖啡廳邂逅",
+      "panels": [
+        {
+          "scene_number": 1,
+          "panel_number": 1,
+          "description": "咖啡廳窗邊，陽光灑落，一個程序員正在打字",
+          "dialogue": "這裡的咖啡真香...",
+          "character_refs": [],
+          "image_url": "",
+          "duration_sec": 3.0
+        },
+        {
+          "scene_number": 1,
+          "panel_number": 2,
+          "description": "咖啡師優雅地拉花，抬頭微笑",
+          "dialogue": "您好，需要什麼嗎？",
+          "character_refs": [],
+          "image_url": "",
+          "duration_sec": 2.5
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "description": "一見鍾情",
+      "panels": [
+        {
+          "scene_number": 2,
+          "panel_number": 1,
+          "description": "程序員愣住，筆記本電腦滑落差點摔落",
+          "dialogue": "我...我想要一杯拿鐵。",
+          "character_refs": [],
+          "image_url": "",
+          "duration_sec": 3.5
+        }
+      ]
+    }
+  ],
+  "created_at": "2026-03-14T18:13:00Z"
+}
