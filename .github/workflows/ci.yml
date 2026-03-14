@@ -37,16 +37,12 @@ jobs:
           total=$(go tool cover -func=coverage.out | grep "total:" | awk '{print $3}' | tr -d '%')
           echo "Coverage: ${total}%"
           echo "Threshold: ${COVERAGE_THRESHOLD}%"
-          python3 -c "
-import sys
-coverage = float('${total}')
-threshold = float('${COVERAGE_THRESHOLD}')
-if coverage < threshold:
-    print(f'\u274c Coverage {coverage:.1f}% below threshold {threshold}%')
-    sys.exit(1)
-else:
-    print(f'\u2705 Coverage {coverage:.1f}% meets threshold {threshold}%')
-"
+          result=$(echo "${total} ${COVERAGE_THRESHOLD}" | awk '{if ($1+0 < $2+0) print "FAIL"; else print "OK"}')
+          if [ "$result" = "FAIL" ]; then
+            echo "Coverage ${total}% below threshold ${COVERAGE_THRESHOLD}%"
+            exit 1
+          fi
+          echo "Coverage OK"
 
       - name: go build
         run: GOTMPDIR=/tmp/gobuild go build -o /tmp/shand .
