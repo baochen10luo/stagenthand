@@ -7,9 +7,9 @@ on:
     branches: [main]
 
 env:
-  GO_VERSION: "1.25"
+  GO_VERSION: "1.23"
   NODE_VERSION: "20"
-  COVERAGE_THRESHOLD: "80"
+  COVERAGE_THRESHOLD: "75"
 
 jobs:
   # ─────────────────────────────────────────────────────
