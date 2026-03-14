@@ -9,6 +9,7 @@ export type Panel = {
   dialogue: string;
   character_refs: string[];
   image_url: string;
+  audio_url?: string;
   duration_sec: number; // display duration in seconds
 };
 

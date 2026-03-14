@@ -1,5 +1,6 @@
 import {
   AbsoluteFill,
+  Audio,
   Img,
   interpolate,
   staticFile,
@@ -113,6 +114,9 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel }) => {
           </div>
         </AbsoluteFill>
       )}
+
+      {/* TTS Audio */}
+      {panel.audio_url && <Audio src={staticFile(panel.audio_url)} />}
     </AbsoluteFill>
   );
 };

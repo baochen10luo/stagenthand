@@ -1,0 +1,5 @@
+llm:
+  provider: "openai"
+remotion:
+  template_path: "./remotion-template"
+  composition: "ShortDrama"

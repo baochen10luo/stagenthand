@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/baochen10luo/stagenthand/internal/audio"
 	"github.com/baochen10luo/stagenthand/internal/domain"
 	"github.com/baochen10luo/stagenthand/internal/image"
 	"github.com/baochen10luo/stagenthand/internal/store"
@@ -58,6 +59,57 @@ func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []d
 
 		p.ImageURL = absPath
 		result[i] = p
+	}
+	return result, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AudioClientBatcher adapts an audio.Client into an AudioBatcher interface.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AudioClientBatcher uses a text-to-speech client to generate audio for dialogs.
+type AudioClientBatcher struct {
+	client  audio.Client
+	rootDir string
+}
+
+func NewAudioClientBatcher(c audio.Client, rootDir string) *AudioClientBatcher {
+	return &AudioClientBatcher{client: c, rootDir: rootDir}
+}
+
+// BatchGenerateAudio generates audio for all panels that have dialogue.
+func (b *AudioClientBatcher) BatchGenerateAudio(ctx context.Context, panels []domain.Panel, targetDir string) ([]domain.Panel, error) {
+	fullDir := filepath.Join(b.rootDir, targetDir)
+	if err := os.MkdirAll(fullDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create audio dir %s: %w", fullDir, err)
+	}
+
+	result := make([]domain.Panel, len(panels))
+	for i, p := range panels {
+		result[i] = p
+		if p.Dialogue == "" {
+			continue // skip panels without dialogue
+		}
+
+		filename := fmt.Sprintf("scene_%d_panel_%d.mp3", p.SceneNumber, p.PanelNumber)
+		absPath := filepath.Join(fullDir, filename)
+
+		// Resume Logic
+		if info, err := os.Stat(absPath); err == nil && info.Size() > 0 {
+			result[i].AudioURL = absPath
+			continue
+		}
+
+		audioBytes, err := b.client.GenerateSpeech(ctx, p.Dialogue)
+		if err != nil {
+			return nil, fmt.Errorf("panel %d-%d audio gen failed: %w", p.SceneNumber, p.PanelNumber, err)
+		}
+
+		if err := os.WriteFile(absPath, audioBytes, 0644); err != nil {
+			return nil, fmt.Errorf("failed to save audio %s: %w", absPath, err)
+		}
+
+		result[i].AudioURL = absPath
 	}
 	return result, nil
 }

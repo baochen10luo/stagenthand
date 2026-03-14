@@ -95,6 +95,7 @@ type Panel struct {
 	Dialogue      string   `json:"dialogue"`            // subtitle text
 	CharacterRefs []string `json:"character_refs"`      // paths to character reference images
 	ImageURL      string   `json:"image_url,omitempty"` // populated after generation
+	AudioURL      string   `json:"audio_url,omitempty"` // populated after TTS generation
 	DurationSec   float64  `json:"duration_sec"`        // display duration in Remotion
 }
 

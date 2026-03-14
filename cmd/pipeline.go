@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/baochen10luo/stagenthand/internal/audio"
 	"github.com/baochen10luo/stagenthand/internal/domain"
 	"github.com/baochen10luo/stagenthand/internal/image"
 	"github.com/baochen10luo/stagenthand/internal/llm"
@@ -71,10 +72,14 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	ckptRepo := store.NewGormCheckpointRepository(db)
 	ckptGate := pipeline.NewCheckpointGate(ckptRepo)
 
+	// Build audio client (Polly)
+	audioClient := audio.NewPollyCLIClient()
+
 	// Wire orchestrator
 	orch := pipeline.NewOrchestrator(pipeline.OrchestratorDeps{
 		LLM:         llmClient,
 		Images:      pipeline.NewImageClientBatcher(imgClient, shandHome),
+		Audio:       pipeline.NewAudioClientBatcher(audioClient, shandHome),
 		Checkpoints: ckptGate,
 		DryRun:      dryRun,
 		SkipHITL:    pipelineSkipHITL,

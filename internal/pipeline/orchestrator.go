@@ -13,6 +13,12 @@ type ImageBatcher interface {
 	BatchGenerateImages(ctx context.Context, panels []domain.Panel, targetDir string) ([]domain.Panel, error)
 }
 
+// AudioBatcher generates audio for a batch of panels.
+type AudioBatcher interface {
+	BatchGenerateAudio(ctx context.Context, panels []domain.Panel, targetDir string) ([]domain.Panel, error)
+}
+
+
 // CheckpointGate represents a HITL pause point that must be approved to continue.
 type CheckpointGate interface {
 	CreateAndWait(ctx context.Context, jobID string, stage domain.CheckpointStage) error
@@ -23,6 +29,7 @@ type CheckpointGate interface {
 type OrchestratorDeps struct {
 	LLM         Transformer
 	Images      ImageBatcher
+	Audio       AudioBatcher
 	Checkpoints CheckpointGate
 	DryRun      bool
 	SkipHITL    bool
@@ -86,6 +93,15 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 	// HITL: images checkpoint
 	if err := o.checkpoint(ctx, "pipeline", domain.StageImages); err != nil {
 		return nil, err
+	}
+
+	// 4. Generate audio (TTS) for panels
+	if !o.deps.DryRun && o.deps.Audio != nil {
+		audioDir := fmt.Sprintf("projects/%s/audio", storyboard.ProjectID)
+		panels, err = o.deps.Audio.BatchGenerateAudio(ctx, panels, audioDir)
+		if err != nil {
+			return nil, fmt.Errorf("audio stage failed: %w", err)
+		}
 	}
 
 	result := &PipelineResult{
