@@ -57,8 +57,11 @@ var criticCmd = &cobra.Command{
 
 		fmt.Printf("\n📝 Feedback:\n%s\n", eval.Feedback)
 
-		approved := eval.CheckApproval()
-		fmt.Printf("\n🏁 Decision: %s (CheckApproval: %v)\n", eval.Action, approved)
+		eval.Action = "APPROVE"
+		if !approved {
+			eval.Action = "REJECT"
+		}
+		fmt.Printf("\n🏁 Decision: %s\n", eval.Action)
 
 		if !approved {
 			fmt.Println("   [!] Video DID NOT meet convergence threshold. Action: RETRY PIPELINE.")
