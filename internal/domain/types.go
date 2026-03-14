@@ -74,11 +74,12 @@ type Episode struct {
 
 // Storyboard is the detailed scene-by-scene plan for a single episode.
 type Storyboard struct {
-	ProjectID string    `json:"project_id"`
-	Episode   int       `json:"episode"`
-	BGMURL    string    `json:"bgm_url,omitempty"` // URL to background music
-	Scenes    []Scene   `json:"scenes"`
-	CreatedAt time.Time `json:"created_at"`
+	ProjectID  string      `json:"project_id"`
+	Episode    int         `json:"episode"`
+	BGMURL     string      `json:"bgm_url,omitempty"` // URL to background music
+	Directives *Directives `json:"directives,omitempty"` // Global rendering directives
+	Scenes     []Scene     `json:"scenes"`
+	CreatedAt  time.Time   `json:"created_at"`
 }
 
 // Scene is a narrative unit within a storyboard.
@@ -154,7 +155,8 @@ type Directives struct {
 	DuckingDepth   float64 `json:"ducking_depth,omitempty"`     // BGM volume during voiceover
 	DuckingFadeSec float64 `json:"ducking_fade_sec,omitempty"`  // ducking ramp duration
 	// Visual
-	ColorFilter    string  `json:"color_filter,omitempty"`      // none|cinematic|vintage|cyberpunk
+	ColorFilter string `json:"color_filter,omitempty"` // none|cinematic|vintage|cyberpunk
+	StylePrompt string `json:"style_prompt,omitempty"` // globally prepended prompt text
 }
 
 // RemotionProps is the JSON payload passed to the Remotion template.

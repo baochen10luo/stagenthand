@@ -46,7 +46,7 @@ func parseAndConvert(raw []byte, width, height int) (domain.RemotionProps, error
 	var panels []domain.Panel
 	if err := json.Unmarshal(raw, &panels); err == nil && len(panels) > 0 {
 		projectID := "default"
-		return remotion.PanelsToProps(projectID, panels, width, height, 24, "", nil), nil
+		return remotion.PanelsToProps(projectID, panels, width, height, 24, "", sb.Directives), nil
 	}
 
 	return domain.RemotionProps{}, fmt.Errorf("unrecognized input: expected Storyboard or []Panel JSON")

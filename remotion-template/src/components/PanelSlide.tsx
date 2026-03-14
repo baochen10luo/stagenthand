@@ -129,7 +129,9 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
   } else if (dir.subtitle_effect === "typewriter" && panel.dialogue) {
     subtitleOpacity = 1;
     const totalChars = panel.dialogue.length;
-    const typewriterFrames = Math.round(0.8 * durationFrames); // use 80% of duration
+    // Linus architectural fix: decouple speed from duration. 
+    // Assume roughly 100ms (0.1s) per character to match natural reading/speaking speed.
+    const typewriterFrames = Math.round(totalChars * (0.1 * fps)); 
     const charsVisible = Math.round(
       interpolate(frame, [subtitleDelay, subtitleDelay + typewriterFrames], [0, totalChars], {
         extrapolateRight: "clamp",

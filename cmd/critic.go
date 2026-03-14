@@ -57,6 +57,7 @@ var criticCmd = &cobra.Command{
 
 		fmt.Printf("\n📝 Feedback:\n%s\n", eval.Feedback)
 
+		approved := eval.CheckApproval()
 		eval.Action = "APPROVE"
 		if !approved {
 			eval.Action = "REJECT"

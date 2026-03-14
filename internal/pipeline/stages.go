@@ -51,11 +51,15 @@ Output JSON MUST follow this outline schema:
   ]
 }`
 
-	PromptOutlineToStoryboard = `You are a storyboard director. Convert the input outline JSON into a localized scene-by-scene storyboard JSON.
+	PromptOutlineToStoryboard = `You are a storyboard director. Convert the input outline JSON into a localized scene-by-scene storyboard JSON. Ensure your scenes follow a cohesive 3-act narrative arc (setup, conflict, resolution).
 Output JSON MUST follow this schema:
 {
   "project_id": "...",
   "episode": 1,
+  "directives": {
+    "style_prompt": "Define a cohesive global style for image generation (e.g. 'photorealistic cyberpunk with neon reflections, dark noir')",
+    "color_filter": "cinematic"
+  },
   "scenes": [
     {
       "number": 1,
@@ -65,6 +69,8 @@ Output JSON MUST follow this schema:
 }`
 
 	PromptStoryboardToPanels = `You are a visual panel designer. Convert the input storyboard JSON into a detailed panel-by-panel generation JSON.
+Target total video length: approximately 30–50 seconds. Use 4–7 panels maximum.
+Each panel's 'duration_sec' should reflect the time needed to naturally speak the dialogue aloud PLUS viewer breathing time. Estimate ~0.12 seconds per character. Keep individual dialogue short and punchy — no more than 30 words per panel.
 Output JSON MUST follow this schema:
 {
   "project_id": "...",
@@ -76,7 +82,7 @@ Output JSON MUST follow this schema:
       "description": "...",
       "dialogue": "...",
       "character_refs": [],
-      "duration_sec": 3.0
+      "duration_sec": 4.0
     }
   ]
 }`

@@ -67,7 +67,7 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 	// 1. Detection: Is this already a flat list of panels (RemotionProps)?
 	var props domain.RemotionProps
 	if jsonUnmarshal(inputData, &props) == nil && len(props.Panels) > 0 {
-		return o.executeFromPanels(ctx, props.ProjectID, props.Panels, props.BGMURL)
+		return o.executeFromPanels(ctx, props.ProjectID, props.Panels, props.BGMURL, props.Directives)
 	}
 
 	// 2. Normal flow: Resolve to a Storyboard
@@ -82,12 +82,24 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 		return nil, fmt.Errorf("panels stage failed: %w", err)
 	}
 
-	return o.executeFromPanels(ctx, storyboard.ProjectID, panels, storyboard.BGMURL)
+	return o.executeFromPanels(ctx, storyboard.ProjectID, panels, storyboard.BGMURL, storyboard.Directives)
 }
 
 // executeFromPanels runs the asset generation stages (Images, Audio, Music) from a flat panel list.
-func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, panels []domain.Panel, bgmURL string) (*PipelineResult, error) {
+func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, panels []domain.Panel, bgmURL string, directives *domain.Directives) (*PipelineResult, error) {
 	var err error
+
+	// Prepend StylePrompt to enforce visual consistency across all panels
+	if directives != nil && directives.StylePrompt != "" {
+		for i := range panels {
+			panels[i].Description = directives.StylePrompt + ", " + panels[i].Description
+		}
+	}
+
+	// Apply dynamic duration: ensure each panel is long enough for its dialogue
+	// plus an inversely-proportional breathing buffer for the viewer.
+	panels = applyDynamicDuration(panels)
+
 
 	// 3. Generate images for panels
 	if !o.deps.DryRun {
@@ -126,7 +138,7 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	}
 
 	return &PipelineResult{
-		Storyboard: domain.Storyboard{ProjectID: projectID, BGMURL: bgmURL}, // Minimal backfill
+		Storyboard: domain.Storyboard{ProjectID: projectID, BGMURL: bgmURL, Directives: directives}, // Minimal backfill
 		Panels:     panels,
 	}, nil
 }
@@ -207,4 +219,39 @@ func flattenScenePanels(scenes []domain.Scene) []domain.Panel {
 		out = append(out, s.Panels...)
 	}
 	return out
+}
+
+// applyDynamicDuration ensures every panel has enough display time for its dialogue.
+// For panels with dialogue, we estimate speech duration (120ms/char at 90% Polly rate),
+// then add an inversely-proportional breathing buffer:
+//
+//	buffer = clamp(3.0 - speechSec × 0.25, 1.0, 3.5)
+//
+// This means short punchy lines ("Not tonight.") get a longer dramatic pause,
+// while long monologues flow straight into the next panel.
+// Panels without dialogue are left untouched.
+func applyDynamicDuration(panels []domain.Panel) []domain.Panel {
+	const msPerChar = 0.12  // seconds per rune at 90% Polly neural rate
+	const baseBuffer = 3.0  // maximum buffer for very short lines
+	const minBuffer = 1.0   // minimum breathing room
+	const bufferSlope = 0.25 // how quickly buffer shrinks as speech grows
+
+	for i, p := range panels {
+		if p.Dialogue == "" {
+			continue // silent panel — leave LLM-assigned duration intact
+		}
+		speechSec := float64(len([]rune(p.Dialogue))) * msPerChar
+		buffer := baseBuffer - speechSec*bufferSlope
+		if buffer < minBuffer {
+			buffer = minBuffer
+		}
+		if buffer > 3.5 {
+			buffer = 3.5
+		}
+		required := speechSec + buffer
+		if panels[i].DurationSec < required {
+			panels[i].DurationSec = required
+		}
+	}
+	return panels
 }

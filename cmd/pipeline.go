@@ -95,7 +95,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	}
 
 	// Write remotion props
-	props := remotion.PanelsToProps(result.Storyboard.ProjectID, result.Panels, cfg.Image.Width, cfg.Image.Height, 24, result.Storyboard.BGMURL, nil)
+	props := remotion.PanelsToProps(result.Storyboard.ProjectID, result.Panels, cfg.Image.Width, cfg.Image.Height, 24, result.Storyboard.BGMURL, result.Storyboard.Directives)
 	if err := writeResults(result, props); err != nil {
 		return stageError("pipeline", "output_error", err.Error())
 	}

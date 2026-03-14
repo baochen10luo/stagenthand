@@ -32,6 +32,7 @@ export type Directives = {
   ducking_depth?: number;  // BGM volume during voiceover 0.0–1.0
   ducking_fade_sec?: number;
   color_filter?: "none" | "cinematic" | "vintage" | "cyberpunk";
+  style_prompt?: string;
 };
 
 export type RemotionProps = {

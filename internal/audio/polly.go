@@ -48,6 +48,7 @@ func (c *PollyCLIClient) GenerateSpeech(ctx context.Context, text string) ([]byt
 
 	// Command: aws polly synthesize-speech --text-type ssml --text "<speak>...</speak>" --output-format mp3 --voice-id Zhiyu out.mp3
 	cmd := exec.CommandContext(ctx, "aws", "polly", "synthesize-speech",
+		"--engine", "neural",
 		"--text-type", "ssml",
 		"--text", ssmlText,
 		"--output-format", "mp3",
@@ -111,7 +112,9 @@ func formatSSML(dialogue string) string {
 
 	// 6. Wrap in SSML
 	if isWhisper {
-		return fmt.Sprintf("<speak><amazon:effect name=\"whispered\">%s</amazon:effect></speak>", safeText)
+		safeText = fmt.Sprintf("<amazon:effect name=\"whispered\">%s</amazon:effect>", safeText)
 	}
-	return fmt.Sprintf("<speak>%s</speak>", safeText)
+	
+	// Default to 90% speech rate to add dramatic pauses and avoid rushed GPS-like reading.
+	return fmt.Sprintf("<speak><prosody rate=\"90%%\">%s</prosody></speak>", safeText)
 }
