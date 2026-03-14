@@ -154,6 +154,7 @@ type Directives struct {
 	BGMVolume      float64 `json:"bgm_volume,omitempty"`        // base volume 0.0–1.0
 	DuckingDepth   float64 `json:"ducking_depth,omitempty"`     // BGM volume during voiceover
 	DuckingFadeSec float64 `json:"ducking_fade_sec,omitempty"`  // ducking ramp duration
+	BGMTags        string  `json:"bgm_tags,omitempty"`        // + separated tags for Jamendo
 	// Visual
 	ColorFilter string `json:"color_filter,omitempty"` // none|cinematic|vintage|cyberpunk
 	StylePrompt string `json:"style_prompt,omitempty"` // globally prepended prompt text

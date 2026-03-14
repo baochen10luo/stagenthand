@@ -128,8 +128,13 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	// 5. Generate BGM
 	if !o.deps.DryRun && o.deps.Music != nil {
 		musicDir := fmt.Sprintf("projects/%s/audio", projectID)
-		// For MVP, using a default cinematic tag. Later can extract from storyboard.
-		bgm, err := o.deps.Music.GenerateProjectBGM(ctx, projectID, "cinematic", musicDir)
+		
+		bgmTags := "cinematic"
+		if directives != nil && directives.BGMTags != "" {
+			bgmTags = directives.BGMTags
+		}
+
+		bgm, err := o.deps.Music.GenerateProjectBGM(ctx, projectID, bgmTags, musicDir)
 		if err != nil {
 			fmt.Printf("⚠️  [Warning] BGM generation skipped: %v\n", err)
 		} else {

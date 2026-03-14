@@ -115,9 +115,18 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
   }
 
   // ─── Subtitle animation ───
+  // Sanitize dialogue: remove prefixes like "VO:", "V.O.", "VO - ", and surrounding quotes.
+  const sanitizeDialogue = (text: string) => {
+    if (!text) return "";
+    let clean = text.replace(/^(?:VO|V\.O\.|Narrator)[^a-zA-Z0-9="'\u4e00-\u9fa5]*/i, "");
+    clean = clean.replace(/^['"](.*)['"]$/, "$1"); // remove surrounding quotes
+    return clean.trim();
+  };
+
   const subtitleDelay = Math.round(0.15 * fps);
   let subtitleOpacity = 1;
-  let subtitleText = panel.dialogue;
+  const cleanDialogue = sanitizeDialogue(panel.dialogue);
+  let subtitleText = cleanDialogue;
 
   if (dir.subtitle_effect === "fade") {
     subtitleOpacity = interpolate(
@@ -126,9 +135,9 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
       [0, 1],
       { extrapolateRight: "clamp", extrapolateLeft: "clamp" }
     );
-  } else if (dir.subtitle_effect === "typewriter" && panel.dialogue) {
+  } else if (dir.subtitle_effect === "typewriter" && cleanDialogue) {
     subtitleOpacity = 1;
-    const totalChars = panel.dialogue.length;
+    const totalChars = cleanDialogue.length;
     // Linus architectural fix: decouple speed from duration. 
     // Assume roughly 100ms (0.1s) per character to match natural reading/speaking speed.
     const typewriterFrames = Math.round(totalChars * (0.1 * fps)); 
@@ -138,7 +147,7 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
         extrapolateLeft: "clamp",
       })
     );
-    subtitleText = panel.dialogue.substring(0, charsVisible);
+    subtitleText = cleanDialogue.substring(0, charsVisible);
   } else if (dir.subtitle_effect === "none") {
     subtitleOpacity = 1;
   }

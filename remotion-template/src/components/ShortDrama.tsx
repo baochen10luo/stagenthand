@@ -10,13 +10,15 @@ const DD: Required<Directives> = {
   ducking_depth: 0.15,
   ducking_fade_sec: 0.5,
   color_filter: "none",
+  bgm_tags: "",
+  style_prompt: "",
 };
 
 function dd(d?: Directives): Required<Directives> {
   return { ...DD, ...(d ?? {}) };
 }
 
-// BGMAudio handles fade-in, fade-out, and auto-ducking of background music.
+// BGMAudio handles fade-in, fade-out, and anticipatory auto-ducking of background music.
 const BGMAudio: React.FC<{
   bgmUrl: string;
   directives: Required<Directives>;
@@ -26,7 +28,7 @@ const BGMAudio: React.FC<{
 }> = ({ bgmUrl, directives, panels, fps, totalFrames }) => {
   const frame = useCurrentFrame();
 
-  // 1. Fade envelope
+  // 1. Fade envelope (global BGM fade in/out)
   const fadeInFrames = Math.round(directives.bgm_fade_in_sec * fps);
   const fadeOutFrames = Math.round(directives.bgm_fade_out_sec * fps);
 
@@ -42,33 +44,43 @@ const BGMAudio: React.FC<{
   );
   const fadeEnvelope = Math.min(fadeIn, fadeOut);
 
-  // 2. Ducking: lower BGM volume when a panel has audio_url
+  // 2. Anticipatory Ducking: gracefully lower BGM volume spanning voiceovers
   let duckFactor = 1.0;
   let accumulatedFrames = 0;
   const duckFadeFrames = Math.round(directives.ducking_fade_sec * fps);
+  // Calculate Target Duck Factor
+  const targetDuckRatio = directives.ducking_depth / (directives.bgm_volume || 1);
 
   for (const panel of panels) {
-    const panelFrames = Math.round(panel.duration_sec * fps);
+    const panelFrames = Math.max(1, Math.round(panel.duration_sec * fps));
     const panelStart = accumulatedFrames;
     const panelEnd = accumulatedFrames + panelFrames;
 
     if (panel.audio_url) {
-      // Inside a voiceover panel: duck the BGM
-      const duckIn = interpolate(
-        frame,
-        [panelStart, panelStart + duckFadeFrames],
-        [1.0, directives.ducking_depth / directives.bgm_volume],
-        { extrapolateRight: "clamp", extrapolateLeft: "clamp" }
-      );
-      const duckOut = interpolate(
-        frame,
-        [panelEnd - duckFadeFrames, panelEnd],
-        [directives.ducking_depth / directives.bgm_volume, 1.0],
-        { extrapolateRight: "clamp", extrapolateLeft: "clamp" }
-      );
+      const distanceToStart = panelStart - frame;
+      const distanceFromEnd = frame - panelEnd;
 
-      if (frame >= panelStart && frame < panelEnd) {
-        duckFactor = Math.min(duckIn, duckOut);
+      if (frame >= panelStart && frame <= panelEnd) {
+        // Deep in the voiceover
+        duckFactor = Math.min(duckFactor, targetDuckRatio);
+      } else if (distanceToStart > 0 && distanceToStart <= duckFadeFrames) {
+        // Anticipatory fade down BEFORE the voiceover begins
+        const duck = interpolate(
+          distanceToStart,
+          [0, duckFadeFrames],
+          [targetDuckRatio, 1.0],
+          { extrapolateRight: "clamp", extrapolateLeft: "clamp" }
+        );
+        duckFactor = Math.min(duckFactor, duck);
+      } else if (distanceFromEnd > 0 && distanceFromEnd <= duckFadeFrames) {
+        // Lingering fade up AFTER the voiceover ends
+        const duck = interpolate(
+          distanceFromEnd,
+          [0, duckFadeFrames],
+          [targetDuckRatio, 1.0],
+          { extrapolateRight: "clamp", extrapolateLeft: "clamp" }
+        );
+        duckFactor = Math.min(duckFactor, duck);
       }
     }
     accumulatedFrames = panelEnd;
@@ -76,7 +88,7 @@ const BGMAudio: React.FC<{
 
   const finalVolume = directives.bgm_volume * fadeEnvelope * duckFactor;
 
-  return <Audio src={staticFile(bgmUrl)} loop volume={finalVolume} />;
+  return <Audio src={staticFile(bgmUrl)} loop volume={Math.max(0, finalVolume)} />;
 };
 
 

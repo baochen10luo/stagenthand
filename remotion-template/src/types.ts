@@ -31,6 +31,7 @@ export type Directives = {
   bgm_volume?: number;     // 0.0–1.0
   ducking_depth?: number;  // BGM volume during voiceover 0.0–1.0
   ducking_fade_sec?: number;
+  bgm_tags?: string;
   color_filter?: "none" | "cinematic" | "vintage" | "cyberpunk";
   style_prompt?: string;
 };
