@@ -54,36 +54,40 @@ type PipelineResult struct {
 	Props      domain.RemotionProps
 }
 
-// Run executes the pipeline from an initial input (story prompt, outline JSON, or storyboard JSON)
-// and returns the final PipelineResult.
-// It automatically detects the input type and skips already-completed stages.
 func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResult, error) {
 	if len(inputData) == 0 {
 		return nil, fmt.Errorf("input data is empty")
 	}
 
-	// 1. Resolve to a Storyboard (scenes with descriptions)
+	// 1. Detection: Is this already a flat list of panels (RemotionProps)?
+	var props domain.RemotionProps
+	if jsonUnmarshal(inputData, &props) == nil && len(props.Panels) > 0 {
+		return o.executeFromPanels(ctx, props.ProjectID, props.Panels)
+	}
+
+	// 2. Normal flow: Resolve to a Storyboard
 	storyboard, err := o.resolveToStoryboard(ctx, inputData)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Storyboard -> Panels (visual detailed frames)
-	// We need to transform the basic storyboard into a detailed panel list.
+	// 3. Storyboard -> Panels
 	panels, err := o.transformStoryboardToPanels(ctx, storyboard)
 	if err != nil {
 		return nil, fmt.Errorf("panels stage failed: %w", err)
 	}
 
-	// HITL: storyboard checkpoint
-	if err := o.checkpoint(ctx, "pipeline", domain.StageStoryboard); err != nil {
-		return nil, err
-	}
+	return o.executeFromPanels(ctx, storyboard.ProjectID, panels)
+}
+
+// executeFromPanels runs the asset generation stages (Images, Audio) from a flat panel list.
+func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, panels []domain.Panel) (*PipelineResult, error) {
+	var err error
 
 	// 3. Generate images for panels
 	if !o.deps.DryRun {
-		// Target directory for images: <project_id>/images/
-		targetDir := fmt.Sprintf("projects/%s/images", storyboard.ProjectID)
+		// Target directory for images: projects/<project_id>/images/
+		targetDir := fmt.Sprintf("projects/%s/images", projectID)
 		panels, err = o.deps.Images.BatchGenerateImages(ctx, panels, targetDir)
 		if err != nil {
 			return nil, fmt.Errorf("image stage failed: %w", err)
@@ -97,18 +101,17 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 
 	// 4. Generate audio (TTS) for panels
 	if !o.deps.DryRun && o.deps.Audio != nil {
-		audioDir := fmt.Sprintf("projects/%s/audio", storyboard.ProjectID)
+		audioDir := fmt.Sprintf("projects/%s/audio", projectID)
 		panels, err = o.deps.Audio.BatchGenerateAudio(ctx, panels, audioDir)
 		if err != nil {
 			return nil, fmt.Errorf("audio stage failed: %w", err)
 		}
 	}
 
-	result := &PipelineResult{
-		Storyboard: storyboard,
+	return &PipelineResult{
+		Storyboard: domain.Storyboard{ProjectID: projectID}, // Minimal backfill
 		Panels:     panels,
-	}
-	return result, nil
+	}, nil
 }
 
 // resolveToStoryboard determines if the input is a Story, Outline, or Storyboard

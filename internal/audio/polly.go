@@ -13,13 +13,22 @@ import (
 type PollyCLIClient struct {
 	voiceID      string
 	languageCode string
+	region       string
+	accessKey    string
+	secretKey    string
 }
 
 // NewPollyCLIClient creates a new TTS client backed by the AWS CLI.
-func NewPollyCLIClient() *PollyCLIClient {
+func NewPollyCLIClient(region, accessKey, secretKey string) *PollyCLIClient {
+	if region == "" {
+		region = "us-east-1"
+	}
 	return &PollyCLIClient{
 		voiceID:      "Zhiyu",
 		languageCode: "cmn-CN",
+		region:       region,
+		accessKey:    accessKey,
+		secretKey:    secretKey,
 	}
 }
 
@@ -38,11 +47,18 @@ func (c *PollyCLIClient) GenerateSpeech(ctx context.Context, text string) ([]byt
 		"--output-format", "mp3",
 		"--voice-id", c.voiceID,
 		"--language-code", c.languageCode,
+		"--region", c.region,
 		tmpFile,
 	)
 
-	// Inherit environment for AWS credentials
+	// Inherit environment and inject AWS credentials
 	cmd.Env = os.Environ()
+	if c.accessKey != "" && c.secretKey != "" {
+		cmd.Env = append(cmd.Env,
+			fmt.Sprintf("AWS_ACCESS_KEY_ID=%s", c.accessKey),
+			fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", c.secretKey),
+		)
+	}
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {

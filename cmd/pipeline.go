@@ -73,7 +73,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	ckptGate := pipeline.NewCheckpointGate(ckptRepo)
 
 	// Build audio client (Polly)
-	audioClient := audio.NewPollyCLIClient()
+	audioClient := audio.NewPollyCLIClient(cfg.LLM.AWSRegion, cfg.LLM.AWSAccessKeyID, cfg.LLM.AWSSecretAccessKey)
 
 	// Wire orchestrator
 	orch := pipeline.NewOrchestrator(pipeline.OrchestratorDeps{

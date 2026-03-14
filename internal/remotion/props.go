@@ -1,6 +1,11 @@
 package remotion
 
-import "github.com/baochen10luo/stagenthand/internal/domain"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/baochen10luo/stagenthand/internal/domain"
+)
 
 const defaultPanelDurationSec = 3.0
 
@@ -25,7 +30,10 @@ func StoryboardToProps(sb domain.Storyboard, width, height, fps int) domain.Remo
 func PanelsToProps(projectID string, panels []domain.Panel, width, height, fps int) domain.RemotionProps {
 	normalized := make([]domain.Panel, len(panels))
 	for i, p := range panels {
-		normalized[i] = withDefaultDuration(p)
+		p = withDefaultDuration(p)
+		p.ImageURL = normalizePath(p.ImageURL, projectID)
+		p.AudioURL = normalizePath(p.AudioURL, projectID)
+		normalized[i] = p
 	}
 	return domain.RemotionProps{
 		ProjectID: projectID,
@@ -36,6 +44,23 @@ func PanelsToProps(projectID string, panels []domain.Panel, width, height, fps i
 		Height:    height,
 	}
 }
+
+func normalizePath(path, projectID string) string {
+	if path == "" || strings.HasPrefix(path, "/shand/") {
+		return path
+	}
+
+	// Look for the "projects/<project_id>/" segment in the absolute path
+	marker := fmt.Sprintf("projects/%s/", projectID)
+	idx := strings.Index(path, marker)
+	if idx != -1 {
+		// Convert to virtual path: /shand/<project_id>/...
+		return "/shand/" + projectID + "/" + path[idx+len(marker):]
+	}
+
+	return path
+}
+
 
 // flattenPanels extracts all panels from scenes in order, applying default durations.
 func flattenPanels(scenes []domain.Scene) []domain.Panel {
