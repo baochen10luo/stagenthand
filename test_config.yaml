@@ -1,0 +1,10 @@
+llm:
+  provider: "mock"
+image:
+  provider: "mock"
+  width: 1024
+  height: 576
+store:
+  db_path: "./shand.db"
+server:
+  port: 8080

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/baochen10luo/stagenthand/config"
+	"github.com/baochen10luo/stagenthand/internal/pipeline"
 )
 
 // NewClient returns a new LLM client.
@@ -13,6 +14,15 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 	if dryRun || provider == "mock" {
 		return &MockClient{
 			GenerateFunc: func(ctx context.Context, systemPrompt string, inputData []byte) ([]byte, error) {
+				// Stage 1: Story -> Outline
+				if systemPrompt == pipeline.PromptStoryToOutline {
+					return []byte(`{"project_id": "test-proj", "episodes": [{"number": 1, "title": "Mock Title", "synopsis": "Mock S", "hook": "H", "cliffhanger": "C"}]}`), nil
+				}
+				// Stage 2: Outline -> Storyboard
+				if systemPrompt == pipeline.PromptOutlineToStoryboard {
+					return []byte(`{"project_id": "test-proj", "episode": 1, "scenes": [{"number": 1, "description": "Mock Scene", "panels": [{"scene_number": 1, "panel_number": 1, "description": "Mock Panel", "dialogue": "Hello Mock", "character_refs": [], "duration_sec": 3.0}]}]}`), nil
+				}
+				// Default catch-all
 				return []byte(`{"status": "dry-run-ok"}`), nil
 			},
 		}, nil

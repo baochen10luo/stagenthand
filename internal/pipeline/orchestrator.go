@@ -47,16 +47,18 @@ type PipelineResult struct {
 	Props      domain.RemotionProps
 }
 
-// Run executes the pipeline from an initial input (story or storyboard JSON)
-// and returns the final RemotionProps.
-// Errors propagate immediately — no silent failures.
-func (o *Orchestrator) Run(ctx context.Context, inputJSON []byte) (*PipelineResult, error) {
-	// Stage 1: parse storyboard from input
-	// (in a real pipeline this would also call story→outline→storyboard LLM steps;
-	// here we accept already-transformed storyboard JSON to keep the orchestrator thin)
-	storyboard, err := o.parseStoryboard(ctx, inputJSON)
+// Run executes the pipeline from an initial input (story prompt, outline JSON, or storyboard JSON)
+// and returns the final PipelineResult.
+// It automatically detects the input type and skips already-completed stages.
+func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResult, error) {
+	if len(inputData) == 0 {
+		return nil, fmt.Errorf("input data is empty")
+	}
+
+	// 1. Resolve to a Storyboard
+	storyboard, err := o.resolveToStoryboard(ctx, inputData)
 	if err != nil {
-		return nil, fmt.Errorf("storyboard stage failed: %w", err)
+		return nil, err
 	}
 
 	// HITL: storyboard checkpoint
@@ -64,7 +66,7 @@ func (o *Orchestrator) Run(ctx context.Context, inputJSON []byte) (*PipelineResu
 		return nil, err
 	}
 
-	// Stage 2: image generation (skipped in dry-run)
+	// 2. Extract panels and generate images
 	panels := flattenScenePanels(storyboard.Scenes)
 	if !o.deps.DryRun {
 		panels, err = o.deps.Images.BatchGenerateImages(ctx, panels)
@@ -85,23 +87,47 @@ func (o *Orchestrator) Run(ctx context.Context, inputJSON []byte) (*PipelineResu
 	return result, nil
 }
 
-// parseStoryboard runs the LLM transformation to produce a Storyboard.
-// If inputJSON is already a valid Storyboard, it returns it directly.
-func (o *Orchestrator) parseStoryboard(ctx context.Context, inputJSON []byte) (domain.Storyboard, error) {
-	// Try parsing as-is first (storyboard already provided)
+// resolveToStoryboard determines if the input is a Story, Outline, or Storyboard
+// and performs necessary LLM transformations to reach the Storyboard stage.
+func (o *Orchestrator) resolveToStoryboard(ctx context.Context, input []byte) (domain.Storyboard, error) {
+	// Is it already a Storyboard?
 	var sb domain.Storyboard
-	if err := jsonUnmarshal(inputJSON, &sb); err == nil && len(sb.Scenes) > 0 {
+	if jsonUnmarshal(input, &sb) == nil && len(sb.Scenes) > 0 {
 		return sb, nil
 	}
 
-	// Otherwise ask LLM to transform it
-	out, err := o.deps.LLM.GenerateTransformation(ctx, PromptOutlineToStoryboard, inputJSON)
-	if err != nil {
-		return domain.Storyboard{}, err
+	// Is it an Outline? (Try to convert to Storyboard)
+	var outline struct {
+		Episodes []any `json:"episodes"`
+	}
+	if jsonUnmarshal(input, &outline) == nil && len(outline.Episodes) > 0 {
+		return o.transformOutline(ctx, input)
 	}
 
-	if err := jsonUnmarshal(out, &sb); err != nil {
-		return domain.Storyboard{}, fmt.Errorf("LLM produced invalid storyboard JSON: %w", err)
+	// Assume it's a raw Story prompt
+	return o.transformStory(ctx, input)
+}
+
+func (o *Orchestrator) transformStory(ctx context.Context, story []byte) (domain.Storyboard, error) {
+	// Story -> Outline
+	outlineJSON, err := o.deps.LLM.GenerateTransformation(ctx, PromptStoryToOutline, story)
+	if err != nil {
+		return domain.Storyboard{}, fmt.Errorf("story-to-outline failed: %w", err)
+	}
+
+	// Outline -> Storyboard
+	return o.transformOutline(ctx, outlineJSON)
+}
+
+func (o *Orchestrator) transformOutline(ctx context.Context, outline []byte) (domain.Storyboard, error) {
+	storyboardJSON, err := o.deps.LLM.GenerateTransformation(ctx, PromptOutlineToStoryboard, outline)
+	if err != nil {
+		return domain.Storyboard{}, fmt.Errorf("outline-to-storyboard failed: %w", err)
+	}
+
+	var sb domain.Storyboard
+	if err := jsonUnmarshal(storyboardJSON, &sb); err != nil {
+		return domain.Storyboard{}, fmt.Errorf("invalid storyboard JSON produced: %w", err)
 	}
 	return sb, nil
 }
