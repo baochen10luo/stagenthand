@@ -6,3 +6,8 @@ import "encoding/json"
 func jsonUnmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
+
+// jsonMarshal wraps json.Marshal.
+func jsonMarshal(v any) ([]byte, error) {
+	return json.Marshal(v)
+}

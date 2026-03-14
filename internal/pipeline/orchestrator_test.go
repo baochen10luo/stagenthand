@@ -12,11 +12,15 @@ import (
 // --- Mock implementations ---
 
 type mockTransformer struct {
-	output []byte
-	err    error
+	output       []byte
+	err          error
+	GenerateFunc func(ctx context.Context, systemPrompt string, inputData []byte) ([]byte, error)
 }
 
-func (m *mockTransformer) GenerateTransformation(_ context.Context, _ string, _ []byte) ([]byte, error) {
+func (m *mockTransformer) GenerateTransformation(ctx context.Context, systemPrompt string, inputData []byte) ([]byte, error) {
+	if m.GenerateFunc != nil {
+		return m.GenerateFunc(ctx, systemPrompt, inputData)
+	}
 	return m.output, m.err
 }
 
@@ -25,7 +29,7 @@ type mockImageBatcher struct {
 	err    error
 }
 
-func (m *mockImageBatcher) BatchGenerateImages(_ context.Context, panels []domain.Panel) ([]domain.Panel, error) {
+func (m *mockImageBatcher) BatchGenerateImages(_ context.Context, panels []domain.Panel, _ string) ([]domain.Panel, error) {
 	m.called = true
 	if m.err != nil {
 		return nil, m.err
@@ -54,12 +58,20 @@ func (m *mockCheckpointStore) CreateAndWait(_ context.Context, _ string, _ domai
 
 func TestOrchestrator_RunStagesInOrder(t *testing.T) {
 	outlineJSON := []byte(`{"project_id":"p1","episodes":[{"number":1,"title":"Ep1","synopsis":"s","hook":"h","cliffhanger":"c"}]}`)
-	storyboardJSON := []byte(`{"project_id":"p1","episode":1,"scenes":[{"number":1,"description":"scene","panels":[{"scene_number":1,"panel_number":1,"description":"hero","dialogue":"Hello","character_refs":[],"duration_sec":3.0}]}]}`)
+	storyboardJSON := []byte(`{"project_id":"p1","episode":1,"scenes":[{"number":1,"description":"scene"}]}`)
+	panelsJSON := []byte(`{"panels":[{"scene_number":1,"panel_number":1,"description":"hero","dialogue":"Hello","character_refs":[],"duration_sec":3.0}]}`)
 
 	orch := pipeline.NewOrchestrator(pipeline.OrchestratorDeps{
 		LLM: &mockTransformer{
-			// Will be called multiple times; always returns next-stage fixture
-			output: storyboardJSON,
+			GenerateFunc: func(_ context.Context, systemPrompt string, _ []byte) ([]byte, error) {
+				if systemPrompt == pipeline.PromptOutlineToStoryboard {
+					return storyboardJSON, nil
+				}
+				if systemPrompt == pipeline.PromptStoryboardToPanels {
+					return panelsJSON, nil
+				}
+				return nil, errors.New("unexpected prompt")
+			},
 		},
 		Images:      &mockImageBatcher{},
 		Checkpoints: &mockCheckpointStore{approved: true},
@@ -78,11 +90,12 @@ func TestOrchestrator_RunStagesInOrder(t *testing.T) {
 }
 
 func TestOrchestrator_DryRunSkipsImages(t *testing.T) {
-	storyboardJSON := []byte(`{"project_id":"dry","episode":1,"scenes":[{"number":1,"description":"s","panels":[{"scene_number":1,"panel_number":1,"description":"p","dialogue":"d","character_refs":[],"duration_sec":3.0}]}]}`)
+	storyboardJSON := []byte(`{"project_id":"dry","episode":1,"scenes":[{"number":1,"description":"s"}]}`)
+	panelsJSON := []byte(`{"panels":[{"scene_number":1,"panel_number":1,"description":"p"}]}`)
 
 	imgBatcher := &mockImageBatcher{}
 	orch := pipeline.NewOrchestrator(pipeline.OrchestratorDeps{
-		LLM:         &mockTransformer{output: storyboardJSON},
+		LLM:         &mockTransformer{output: panelsJSON},
 		Images:      imgBatcher,
 		Checkpoints: &mockCheckpointStore{approved: true},
 		DryRun:      true,
@@ -99,10 +112,11 @@ func TestOrchestrator_DryRunSkipsImages(t *testing.T) {
 }
 
 func TestOrchestrator_HITLRejectionAborts(t *testing.T) {
-	storyboardJSON := []byte(`{"project_id":"hitl","episode":1,"scenes":[{"number":1,"description":"s","panels":[]}]}`)
+	storyboardJSON := []byte(`{"project_id":"hitl","episode":1,"scenes":[{"number":1,"description":"s"}]}`)
+	panelsJSON := []byte(`{"panels":[]}`)
 
 	orch := pipeline.NewOrchestrator(pipeline.OrchestratorDeps{
-		LLM:         &mockTransformer{output: storyboardJSON},
+		LLM:         &mockTransformer{output: panelsJSON},
 		Images:      &mockImageBatcher{},
 		Checkpoints: &mockCheckpointStore{approved: false}, // rejects
 		DryRun:      false,

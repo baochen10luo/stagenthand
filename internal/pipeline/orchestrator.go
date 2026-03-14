@@ -10,7 +10,7 @@ import (
 // ImageBatcher generates images for a batch of panels.
 // Extracted as interface to honour ISP — orchestrator only needs batch generation.
 type ImageBatcher interface {
-	BatchGenerateImages(ctx context.Context, panels []domain.Panel) ([]domain.Panel, error)
+	BatchGenerateImages(ctx context.Context, panels []domain.Panel, targetDir string) ([]domain.Panel, error)
 }
 
 // CheckpointGate represents a HITL pause point that must be approved to continue.
@@ -55,10 +55,17 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 		return nil, fmt.Errorf("input data is empty")
 	}
 
-	// 1. Resolve to a Storyboard
+	// 1. Resolve to a Storyboard (scenes with descriptions)
 	storyboard, err := o.resolveToStoryboard(ctx, inputData)
 	if err != nil {
 		return nil, err
+	}
+
+	// 2. Storyboard -> Panels (visual detailed frames)
+	// We need to transform the basic storyboard into a detailed panel list.
+	panels, err := o.transformStoryboardToPanels(ctx, storyboard)
+	if err != nil {
+		return nil, fmt.Errorf("panels stage failed: %w", err)
 	}
 
 	// HITL: storyboard checkpoint
@@ -66,10 +73,11 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 		return nil, err
 	}
 
-	// 2. Extract panels and generate images
-	panels := flattenScenePanels(storyboard.Scenes)
+	// 3. Generate images for panels
 	if !o.deps.DryRun {
-		panels, err = o.deps.Images.BatchGenerateImages(ctx, panels)
+		// Target directory for images: <project_id>/images/
+		targetDir := fmt.Sprintf("projects/%s/images", storyboard.ProjectID)
+		panels, err = o.deps.Images.BatchGenerateImages(ctx, panels, targetDir)
 		if err != nil {
 			return nil, fmt.Errorf("image stage failed: %w", err)
 		}
@@ -130,6 +138,22 @@ func (o *Orchestrator) transformOutline(ctx context.Context, outline []byte) (do
 		return domain.Storyboard{}, fmt.Errorf("invalid storyboard JSON produced: %w", err)
 	}
 	return sb, nil
+}
+
+func (o *Orchestrator) transformStoryboardToPanels(ctx context.Context, sb domain.Storyboard) ([]domain.Panel, error) {
+	input, _ := jsonMarshal(sb)
+	panelsJSON, err := o.deps.LLM.GenerateTransformation(ctx, PromptStoryboardToPanels, input)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Panels []domain.Panel `json:"panels"`
+	}
+	if err := jsonUnmarshal(panelsJSON, &result); err != nil {
+		return nil, fmt.Errorf("LLM produced invalid panels JSON: %w", err)
+	}
+	return result.Panels, nil
 }
 
 // checkpoint pauses for HITL approval unless SkipHITL is set.

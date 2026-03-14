@@ -22,13 +22,14 @@ func (m *mockImageClient) GenerateImage(_ context.Context, _ string, _ []string)
 }
 
 func TestImageClientBatcher_Success(t *testing.T) {
-	batcher := pipeline.NewImageClientBatcher(&mockImageClient{data: []byte("fakepng")})
+	tmpDir := t.TempDir()
+	batcher := pipeline.NewImageClientBatcher(&mockImageClient{data: []byte("fakepng")}, tmpDir)
 	panels := []domain.Panel{
 		{SceneNumber: 1, PanelNumber: 1, Description: "hero", CharacterRefs: []string{}},
 		{SceneNumber: 1, PanelNumber: 2, Description: "cafe", CharacterRefs: []string{}},
 	}
 
-	result, err := batcher.BatchGenerateImages(context.Background(), panels)
+	result, err := batcher.BatchGenerateImages(context.Background(), panels, "test-proj/images")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,12 +44,12 @@ func TestImageClientBatcher_Success(t *testing.T) {
 }
 
 func TestImageClientBatcher_PropagatesError(t *testing.T) {
-	batcher := pipeline.NewImageClientBatcher(&mockImageClient{err: errors.New("quota exceeded")})
+	batcher := pipeline.NewImageClientBatcher(&mockImageClient{err: errors.New("quota exceeded")}, t.TempDir())
 	panels := []domain.Panel{
 		{SceneNumber: 1, PanelNumber: 1, Description: "hero"},
 	}
 
-	_, err := batcher.BatchGenerateImages(context.Background(), panels)
+	_, err := batcher.BatchGenerateImages(context.Background(), panels, "error-proj")
 	if err == nil {
 		t.Error("expected error to propagate, got nil")
 	}

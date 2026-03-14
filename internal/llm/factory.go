@@ -20,7 +20,11 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 				}
 				// Stage 2: Outline -> Storyboard
 				if systemPrompt == pipeline.PromptOutlineToStoryboard {
-					return []byte(`{"project_id": "test-proj", "episode": 1, "scenes": [{"number": 1, "description": "Mock Scene", "panels": [{"scene_number": 1, "panel_number": 1, "description": "Mock Panel", "dialogue": "Hello Mock", "character_refs": [], "duration_sec": 3.0}]}]}`), nil
+					return []byte(`{"project_id": "test-proj", "episode": 1, "scenes": [{"number": 1, "description": "Mock Scene"}]}`), nil
+				}
+				// Stage 3: Storyboard -> Panels
+				if systemPrompt == pipeline.PromptStoryboardToPanels {
+					return []byte(`{"project_id": "test-proj", "episode": 1, "panels": [{"scene_number": 1, "panel_number": 1, "description": "Mock Panel", "dialogue": "Hello Mock", "character_refs": [], "duration_sec": 3.0}]}`), nil
 				}
 				// Default catch-all
 				return []byte(`{"status": "dry-run-ok"}`), nil

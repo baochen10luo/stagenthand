@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
@@ -14,28 +16,37 @@ import (
 // ImageClientBatcher adapts an image.Client into the ImageBatcher interface.
 // It generates images concurrently for each panel using the underlying client.
 type ImageClientBatcher struct {
-	client image.Client
+	client  image.Client
+	rootDir string // e.g. /Users/paul/.shand/
 }
 
 // NewImageClientBatcher wraps an image.Client as an ImageBatcher.
-func NewImageClientBatcher(c image.Client) ImageBatcher {
-	return &ImageClientBatcher{client: c}
+func NewImageClientBatcher(c image.Client, rootDir string) ImageBatcher {
+	return &ImageClientBatcher{client: c, rootDir: rootDir}
 }
 
 // BatchGenerateImages generates images for all panels sequentially.
-// Each panel's ImageURL is set to a local placeholder path.
-// For production use, concurrent generation can be added here without changing the interface.
-func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []domain.Panel) ([]domain.Panel, error) {
+// Each panel's ImageURL is set to the local path where the bytes were saved.
+func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []domain.Panel, targetDir string) ([]domain.Panel, error) {
+	fullDir := filepath.Join(b.rootDir, targetDir)
+	if err := os.MkdirAll(fullDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create image dir %s: %w", fullDir, err)
+	}
+
 	result := make([]domain.Panel, len(panels))
 	for i, p := range panels {
 		imgBytes, err := b.client.GenerateImage(ctx, p.Description, p.CharacterRefs)
 		if err != nil {
 			return nil, fmt.Errorf("panel %d-%d image gen failed: %w", p.SceneNumber, p.PanelNumber, err)
 		}
-		// For now, embed as a data URI placeholder; remotion-render can resolve this.
-		// In a real run, a file writer would save to ~/.shand/projects/<id>/images/
-		_ = imgBytes // image bytes are returned; file saving is handled outside this adapter
-		p.ImageURL = fmt.Sprintf("generated://scene_%d_panel_%d.png", p.SceneNumber, p.PanelNumber)
+
+		filename := fmt.Sprintf("scene_%d_panel_%d.png", p.SceneNumber, p.PanelNumber)
+		absPath := filepath.Join(fullDir, filename)
+		if err := os.WriteFile(absPath, imgBytes, 0644); err != nil {
+			return nil, fmt.Errorf("failed to save image %s: %w", absPath, err)
+		}
+
+		p.ImageURL = absPath
 		result[i] = p
 	}
 	return result, nil
