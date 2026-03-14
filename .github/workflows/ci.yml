@@ -37,8 +37,16 @@ jobs:
           total=$(go tool cover -func=coverage.out | grep "total:" | awk '{print $3}' | tr -d '%')
           echo "Coverage: ${total}%"
           echo "Threshold: ${COVERAGE_THRESHOLD}%"
-          awk -v t="${COVERAGE_THRESHOLD}" -v c="${total}" \
-            'BEGIN { if (c+0 < t+0) { print "❌ Coverage below threshold"; exit 1 } else { print "✅ Coverage OK" } }'
+          python3 -c "
+import sys
+coverage = float('${total}')
+threshold = float('${COVERAGE_THRESHOLD}')
+if coverage < threshold:
+    print(f'\u274c Coverage {coverage:.1f}% below threshold {threshold}%')
+    sys.exit(1)
+else:
+    print(f'\u2705 Coverage {coverage:.1f}% meets threshold {threshold}%')
+"
 
       - name: go build
         run: GOTMPDIR=/tmp/gobuild go build -o /tmp/shand .
@@ -66,10 +74,10 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.64.8
-          args: --timeout=3m --go=1.23
+          version: v2.0.2
+          args: --timeout=3m
 
   # ─────────────────────────────────────────────────────
   # Job 3: Remotion template — TypeScript type check + install
