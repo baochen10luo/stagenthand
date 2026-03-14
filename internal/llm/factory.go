@@ -46,7 +46,14 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 			}
 		}
 		return NewOpenAICompatibleClient(baseURL, apiKey, model), nil
-	default:
+	case "bedrock":
+		return NewBedrockClient(
+			cfg.LLM.AWSAccessKeyID,
+			cfg.LLM.AWSSecretAccessKey,
+			cfg.LLM.AWSRegion,
+			cfg.LLM.Model,
+		)
+	default:	
 		return nil, fmt.Errorf("provider %s not implemented yet. Use --dry-run for testing", provider)
 	}
 }
