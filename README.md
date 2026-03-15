@@ -116,7 +116,20 @@ When `--max-retries N` is set, a REJECT verdict automatically triggers up to N r
 
 ### Character Registry
 
-Persistent reference image store in `internal/character/`. When a character is registered, their reference image URL is saved to `~/.shand/shand.db` and automatically reused in subsequent panels, ensuring visual consistency across scenes and episodes.
+Persistent reference image store under `~/.shand/characters/<name>/ref.png`. Register a character once; the pipeline automatically injects their reference image into every panel that names them, ensuring visual consistency across scenes and episodes.
+
+```bash
+# Generate a reference sheet via the image provider, then register
+./shand character generate 阿志 --description "男，28歲，短黑髮，黑框眼鏡，白色廚師服"
+
+# Or register from an existing file
+./shand character register 小芸 --image ./xiaoyun_ref.png
+
+# List registered characters
+./shand character list
+```
+
+Once registered, any panel whose `characters` array includes the name will automatically receive the reference image path in `character_refs`, passed through to the image generation prompt.
 
 ### Batch Production
 
@@ -148,10 +161,16 @@ Asset-aware caching. If a pipeline run is interrupted, re-running skips panels w
 
 ### Human-in-the-Loop
 
-Four HITL checkpoints: `outline`, `storyboard`, `images`, `final`. All three approval channels write to the same SQLite record.
+Four HITL checkpoints: `outline`, `storyboard`, `images`, `final`. When a checkpoint is created, the checkpoint ID and approval commands are printed to stderr so you know exactly what to run next.
 
 ```
 story → [outline ⏸] → [storyboard ⏸] → [images ⏸] → [final ⏸] → mp4
+```
+
+```
+⏸  HITL checkpoint [stage=outline  id=xxxx-xxxx]
+   Approve : shand checkpoint approve xxxx-xxxx
+   Reject  : shand checkpoint reject  xxxx-xxxx
 ```
 
 | Channel | How |
@@ -272,6 +291,8 @@ All commands read JSON from stdin and write JSON to stdout unless noted. Use `--
 | `shand status <job-id>` | Query job status |
 | `shand character list` | List all registered character reference images |
 | `shand character show <name>` | Show character reference details |
+| `shand character generate <name>` | Generate + register a reference sheet via image provider |
+| `shand character register <name>` | Register an existing image file as character reference |
 | `shand postprod evaluate` | Evaluate rendered MP4 with AI Critic |
 | `shand postprod apply` | Apply an EditPlan to RemotionProps |
 | `shand postprod rerender` | Re-render MP4 from updated props |
