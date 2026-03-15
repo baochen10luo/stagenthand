@@ -5,9 +5,51 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
 
 	"github.com/baochen10luo/stagenthand/internal/llm"
 )
+
+const maxVideoBytes = 20 * 1024 * 1024 // 20MB
+
+// compressForCritic compresses a video file if it exceeds maxVideoBytes.
+// Returns the path to use (original or temp), and a cleanup function.
+// If no compression is needed, cleanup is a no-op.
+func compressForCritic(videoPath string) (usePath string, cleanup func(), err error) {
+	info, err := os.Stat(videoPath)
+	if err != nil {
+		return "", func() {}, err
+	}
+
+	// Small enough: use as-is
+	if info.Size() <= maxVideoBytes {
+		return videoPath, func() {}, nil
+	}
+
+	// Check ffmpeg availability before attempting compression
+	if _, lookErr := exec.LookPath("ffmpeg"); lookErr != nil {
+		return "", func() {}, fmt.Errorf("ffmpeg not found, please install ffmpeg")
+	}
+
+	// Need compression: run ffmpeg
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("critic_compressed_%d.mp4", time.Now().UnixNano()))
+
+	cmd := exec.Command("ffmpeg",
+		"-i", videoPath,
+		"-vf", "scale=640:-2",
+		"-b:v", "500k",
+		"-y",
+		tmpFile,
+	)
+	if out, runErr := cmd.CombinedOutput(); runErr != nil {
+		return "", func() {}, fmt.Errorf("ffmpeg compression failed: %s: %w", string(out), runErr)
+	}
+
+	cleanup = func() { os.Remove(tmpFile) }
+	return tmpFile, cleanup, nil
+}
 
 // Evaluation represents the multi-dimensional scoring and feedback from the AI Critic.
 type Evaluation struct {
@@ -43,8 +85,16 @@ func NewCritic(client llm.VideoCriticClient) *Critic {
 
 // Evaluate uses the configured multi-modal model to watch the video, read the directives,
 // and return a structured Evaluation.
+// If the video exceeds 20MB, it is automatically compressed via ffmpeg before being sent to the model.
 func (c *Critic) Evaluate(ctx context.Context, videoPath string, propsJSONData []byte) (*Evaluation, error) {
-	videoBytes, err := os.ReadFile(videoPath)
+	// Auto-compress if video is too large for the model
+	evalPath, cleanup, err := compressForCritic(videoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare video for critique: %w", err)
+	}
+	defer cleanup()
+
+	videoBytes, err := os.ReadFile(evalPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not read video file for critique: %w", err)
 	}
