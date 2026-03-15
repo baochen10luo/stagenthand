@@ -20,11 +20,19 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 				}
 				// Stage 2: Outline -> Storyboard
 				if systemPrompt == pipeline.PromptOutlineToStoryboard {
-					return []byte(`{"project_id": "test-proj", "episode": 1, "scenes": [{"number": 1, "description": "Mock Scene"}]}`), nil
+					return []byte(`{"project_id": "robot-flower", "episode": 1, "scenes": [
+						{"number": 1, "description": "廢墟中的機器人"},
+						{"number": 2, "description": "發光的小花"},
+						{"number": 3, "description": "夕陽下的依偎"}
+					]}`), nil
 				}
 				// Stage 3: Storyboard -> Panels
 				if systemPrompt == pipeline.PromptStoryboardToPanels {
-					return []byte(`{"project_id": "test-proj", "episode": 1, "panels": [{"scene_number": 1, "panel_number": 1, "description": "Mock Panel", "dialogue": "Hello Mock", "character_refs": [], "duration_sec": 3.0}]}`), nil
+					return []byte(`{"project_id": "robot-flower", "episode": 1, "panels": [
+						{"scene_number": 1, "panel_number": 1, "description": "生鏽的機器人在鋼鐵廢墟中漫步", "dialogue": "今天也是安靜的一天...", "character_refs": [], "duration_sec": 3.0},
+						{"scene_number": 2, "panel_number": 1, "description": "瓦礫堆中一朵發光的小花", "dialogue": "那是...什麼？", "character_refs": [], "duration_sec": 4.0},
+						{"scene_number": 3, "panel_number": 1, "description": "機器人捧著小花，背景是巨大的夕陽", "dialogue": "真美。", "character_refs": [], "duration_sec": 3.5}
+					]}`), nil
 				}
 				// Default catch-all
 				return []byte(`{"status": "dry-run-ok"}`), nil
