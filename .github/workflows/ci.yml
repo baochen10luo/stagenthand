@@ -33,16 +33,12 @@ jobs:
 
       - name: go test (with coverage)
         run: |
-          go test -coverprofile=coverage.out -covermode=atomic ./...
+          go test -coverprofile=coverage.out ./...
           total=$(go tool cover -func=coverage.out | grep "total:" | awk '{print $3}' | tr -d '%')
           echo "Coverage: ${total}%"
           echo "Threshold: ${COVERAGE_THRESHOLD}%"
-          result=$(echo "${total} ${COVERAGE_THRESHOLD}" | awk '{if ($1+0 < $2+0) print "FAIL"; else print "OK"}')
-          if [ "$result" = "FAIL" ]; then
-            echo "Coverage ${total}% below threshold ${COVERAGE_THRESHOLD}%"
-            exit 1
-          fi
-          echo "Coverage OK"
+          # Check using awk
+          awk -v t="${COVERAGE_THRESHOLD}" -v c="${total}" 'BEGIN { if (c+0 < t+0) { print "FAIL"; exit 1 } else { print "OK" } }'
 
       - name: go build
         run: GOTMPDIR=/tmp/gobuild go build -o /tmp/shand .
