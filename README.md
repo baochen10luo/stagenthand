@@ -32,6 +32,8 @@ RemotionProps JSON
 output.mp4
   ↓ critic                 (Amazon Nova Pro, multimodal)
 APPROVE / REJECT
+  ↓ postprod loop          (optional: auto fix → rerender until APPROVE)
+Converged mp4
 ```
 
 ---
@@ -88,6 +90,57 @@ Two global directives injected into the pipeline via JSON:
 - `bgm_tags`: Passed to Jamendo for music mood selection.
 
 Additional per-panel `PanelDirective` fields control camera motion (`ken_burns_in`, `pan_left`, etc.), transition type, subtitle position, and font size.
+
+### Multi-Language TTS
+
+Amazon Polly Neural with multi-language support. Use `--language` to select the voice locale. Defaults to `zh-TW`.
+
+| Language code | Locale |
+|---|---|
+| `zh-TW` | Traditional Chinese (Taiwan) — default |
+| `cmn-CN` | Simplified Chinese (Mainland) |
+| `en-US` | English (United States) |
+| `en-GB` | English (United Kingdom) |
+| `ja-JP` | Japanese |
+| `ko-KR` | Korean |
+
+### AI Critic Auto-Retry
+
+When `--max-retries N` is set, a REJECT verdict automatically triggers up to N retry cycles. Each cycle adjusts pipeline parameters based on which dimension scored below threshold:
+
+| Condition | Action |
+|---|---|
+| `visual_score < 8` | Append 8K detail hint to `StylePrompt` |
+| `audio_sync_score < 8` | Decrease `DuckingDepth` by 0.1 |
+| `tone_score < 6` | Multiply `DurationSec` by 1.2 |
+
+### Character Registry
+
+Persistent reference image store in `internal/character/`. When a character is registered, their reference image URL is saved to `~/.shand/shand.db` and automatically reused in subsequent panels, ensuring visual consistency across scenes and episodes.
+
+### Batch Production
+
+Produce multiple episodes from a single story prompt with `--episodes N`. Episodes run concurrently up to the limit set by `--batch-concurrency` (default: 2). Each episode gets its own project directory and job ID.
+
+### Agentic Post-Production
+
+Phase 9.5 adds a fully autonomous post-production loop. The `postprod` subcommands evaluate a rendered MP4, generate an edit plan, apply patches to `RemotionProps`, and re-render — all without human intervention.
+
+Post-production operations are organized in three layers:
+
+**Layer A — API calls required:**
+- `regenerate_image`: Regenerate a specific panel's image via image provider
+- `regenerate_audio`: Re-synthesize dialogue audio via TTS
+- `replace_bgm`: Fetch a new BGM track from Jamendo
+
+**Layer B — Zero cost, props-only patches:**
+- `patch_dialogue`: Edit subtitle/dialogue text
+- `patch_duration`: Adjust a panel's display duration
+- `patch_panel_directive`: Modify per-panel directives (camera motion, transition, etc.)
+- `patch_global_directive`: Modify global directives (StylePrompt, BGMTags)
+
+**Layer C — Render layer:**
+- `rerender`: Re-render the Remotion composition from updated props
 
 ### Smart Resume
 
@@ -217,6 +270,12 @@ All commands read JSON from stdin and write JSON to stdout unless noted. Use `--
 | `shand checkpoint reject <id>` | Reject a checkpoint |
 | `shand checkpoint wait <id>` | Poll until checkpoint resolves |
 | `shand status <job-id>` | Query job status |
+| `shand character list` | List all registered character reference images |
+| `shand character show <name>` | Show character reference details |
+| `shand postprod evaluate` | Evaluate rendered MP4 with AI Critic |
+| `shand postprod apply` | Apply an EditPlan to RemotionProps |
+| `shand postprod rerender` | Re-render MP4 from updated props |
+| `shand postprod loop` | Autonomous evaluate→fix→rerender loop |
 
 ### Key flags
 
@@ -228,6 +287,11 @@ All commands read JSON from stdin and write JSON to stdout unless noted. Use `--
 | `--video <path>` | `critic` | Path to rendered MP4 |
 | `--props <path>` | `critic` | Path to `remotion_props.json` |
 | `--config <path>` | All commands | Override default config file path |
+| `--language` | `pipeline` | TTS language code (default: zh-TW) |
+| `--max-retries` | `pipeline` | AI Critic auto-retry count (default: 0) |
+| `--episodes N` | `pipeline` | Produce N episodes in batch |
+| `--batch-concurrency` | `pipeline` | Max concurrent episodes (default: 2) |
+| `--max-iterations` | `postprod loop` | Max postprod loop iterations (default: 3) |
 
 ---
 
@@ -246,6 +310,8 @@ internal/
   store/               Repository pattern: JobRepo + CheckpointRepo (SQLite/gorm)
   notify/              Notifier interface + Discord webhook
   remotion/            RemotionExecutor interface + exec npx remotion
+  character/           Character Registry: persists reference images for cross-panel consistency
+  postprod/            Agentic post-production: planner, applier, autonomous loop
   pipeline/            Orchestrator — depends on all interfaces only
 config/                viper loader: flag > env > yaml > defaults
 remotion-template/     React + Remotion (ShortDrama composition)
@@ -306,7 +372,8 @@ All user-supplied strings (IDs, file paths, prompts) pass through `internal/doma
 | Phase 6 | Done | AWS Bedrock LLM/Image, Amazon Polly Neural TTS + SSML, audio sync |
 | Phase 7 | Done | AI Critic (multimodal), Jamendo BGM, subtitle sanitization, dynamic duration |
 | Phase 8 | Done | Directives system (StylePrompt / BGMTags), Smart Resume |
-| **Phase 9** | **In progress** | — |
+| Phase 9 | Done | Multi-language TTS, AI Critic auto-retry, Character Registry, batch production |
+| Phase 9.5 | Done | Agentic post-production (postprod evaluate/apply/rerender/loop) |
 
 ---
 
