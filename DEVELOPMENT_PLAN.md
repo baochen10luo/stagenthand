@@ -315,6 +315,164 @@ echo "一個程序員愛上了咖啡師的故事" \
 
 ---
 
+### Phase 6 — AWS Bedrock + Amazon Polly TTS（已完成）
+
+- [x] AWS Bedrock LLM client（amazon.nova-pro-v1:0）
+- [x] AWS Bedrock Nova Canvas 圖像生成
+- [x] Amazon Polly Neural TTS（Zhiyu 中文）+ SSML 格式化（Whisper 效果、角色標籤剝除）
+- [x] AudioClientBatcher 整合進 pipeline orchestrator
+- [x] 音頻與圖像同步邏輯
+
+---
+
+### Phase 7 — AI Critic + Jamendo BGM + 字幕淨化（已完成）
+
+- [x] AI Critic 多模態視頻評估（AWS Bedrock Nova Pro）
+  - 4 維度評分：視覺一致性 / 音視頻同步 / 指令遵守 / 敘事節奏
+  - 硬性失敗條件：visual < 8 OR audio_sync < 8 → REJECT
+  - 總分 ≥ 32 → APPROVE
+- [x] Jamendo API 背景音樂搜索下載（MusicClientBatcher）
+- [x] 字幕污染檢測與過濾（VO / Narrator 標籤）
+- [x] 動態時長計算（依對白長度 + 戲劇停頓）
+
+---
+
+### Phase 8 — Directives 配置系統 + 智能恢復（已完成）
+
+- [x] Directives 全域渲染配置（StylePrompt 視覺風格注入、BGMTags 音樂標籤）
+- [x] PanelDirective 細粒度控制（MotionEffect、TransitionIn/Out、SubtitleEffect）
+- [x] 智能恢復機制（Smart Resume）：圖像/音頻/BGM 檔案已存在則跳過生成
+- [x] storyboard-to-remotion-props 支援 wrapped panels 格式 + --project-id flag
+
+---
+
+### Phase 9 — 多語言 + 批次 + 角色持久化 + Critic 自動 retry
+
+**目標**：擴展 pipeline 的語言能力、生產規模化、角色一致性與品質保障
+
+#### 功能一：多語言 TTS（P0）
+
+- [ ] 解除 Polly voiceID 硬寫死（Zhiyu），改由 config/flag 控制
+- [ ] 語言對應表：zh-TW → Zhiyu/cmn-CN，en-US → Joanna/en-US，ja-JP → Takumi/ja-JP
+- [ ] `Directives` 加 `Language string` 欄位
+- [ ] `cmd/pipeline.go` 加 `--language` flag
+- [ ] `PromptStoryboardToPanels` 注入語言指令
+
+#### 功能二：角色 Embedding 持久化（P1）
+
+- [ ] 新建 `internal/character/` package：`Registry` interface + `FileRegistry` 實作
+- [ ] 儲存路徑：`~/.shand/characters/<name>/<uuid>.png`
+- [ ] Panel 加 `Characters []string` 欄位，LLM 生成時填充
+- [ ] pipeline 自動 lookup/register 角色基準圖
+- [ ] 新增 `shand character list/show` subcommand
+
+#### 功能三：AI Critic 自動 retry（P0）
+
+- [ ] `OrchestratorDeps` 加入 `Critic VideoCriticEvaluator`、`MaxRetries int`
+- [ ] retry 策略：visual < 8 → StylePrompt 前加 "highly detailed, 8K"；audio < 8 → 調 DuckingDepth；tone < 6 → DurationSec × 1.2
+- [ ] `--max-retries` flag（預設 2）
+- [ ] stdout JSON 含 `critic_attempts` 和 `critic_approved` 欄位
+
+#### 功能四：批次多集生產（P1）
+
+- [ ] 新增 `internal/pipeline/batch.go`：`RunBatch()` + bounded concurrency（errgroup）
+- [ ] `--episodes N` flag、`--batch-concurrency` flag（預設 2）
+- [ ] 輸出 JSON 含 episodes[0..N-1] 各自狀態
+
+**驗收標準**：
+```bash
+echo "機器人的故事" | ./shand pipeline --skip-hitl --language en-US --dry-run
+echo "機器人的故事" | ./shand pipeline --skip-hitl --episodes 3 --dry-run
+./shand character list
+go test -cover ./... # ≥ 80%
+```
+
+---
+
+### Phase 9.5 — Agentic 後製（Post-Production）
+
+**目標**：基於已產出的影片，讓 AI Agent 進行外科手術式後製修復，而非全體重生
+
+#### 核心差異
+
+- Phase 9 的 Critic retry = 整條 pipeline 重跑（全體重生）
+- Phase 9.5 = 只動問題素材（可能只重生 1 張圖）
+
+#### 4 層後製操作
+
+**Layer A（需呼叫外部 API）：**
+- [ ] `regenerate_image`：只重生指定 Panel 圖像
+- [ ] `regenerate_audio`：只重生指定 Panel 語音
+- [ ] `replace_bgm`：用新 tag 換 BGM
+
+**Layer B（零 API 成本，只改 JSON）：**
+- [ ] `patch_dialogue`：修字幕文字
+- [ ] `patch_duration`：調整 Panel 時長
+- [ ] `patch_panel_directive`：改單一 Panel 轉場/鏡頭效果
+- [ ] `patch_global_directive`：改全域 BGM 音量/色彩濾鏡
+
+**Layer C（Render 層）：**
+- [ ] `rerender`：只重跑 Remotion，不動素材
+
+#### 新 CLI 設計
+
+```bash
+shand postprod evaluate --video v1.mp4 --props remotion_props.json
+shand postprod apply    --plan edit_plan.json [--dry-run]
+shand postprod rerender --props remotion_props.json
+shand postprod loop     --video v1.mp4 --props remotion_props.json --max-iterations 3
+```
+
+#### 新增套件
+
+- [ ] `internal/domain/types.go`：新增 `EditOperation`、`EditPlan`、`EditResult`、`PanelRef` 結構
+- [ ] `internal/postprod/planner.go`：`LLMEditPlanner`（LLM 把 Evaluation 轉 EditPlan）
+- [ ] `internal/postprod/applier.go`：`DefaultEditApplier`（執行每個 EditOperation）
+- [ ] `internal/postprod/loop.go`：`PostProdLoop`（自主迴路）
+- [ ] `cmd/postprod.go`：cobra subcommand 群組
+
+#### 版本化 Props 管理
+
+```
+projects/<project_id>/
+  remotion_props.json       ← v1
+  remotion_props_v2.json    ← postprod apply 後
+  edit_plans/
+    edit_plan_v2.json       ← 審計軌跡
+  mp4/
+    output_v1.mp4
+    output_v2.mp4
+```
+
+#### 自主迴路決策樹
+
+```
+AI Critic → REJECT
+    ↓
+LLMEditPlanner 分析問題根源
+    ↓
+劇本/敘事層問題 → Phase 9 全體重生
+素材/渲染層問題 → Phase 9.5 外科手術
+    ↓
+apply → rerender → 再評估 → 收斂或繼續（最多 max-iterations 次）
+```
+
+**驗收標準**：
+```bash
+shand postprod evaluate --video final.mp4 --props remotion_props.json
+# 若 REJECT，輸出含 operations[] 的 EditPlan JSON
+
+shand postprod apply --plan edit_plan.json --dry-run
+# 輸出計劃動作，不呼叫 API
+
+shand postprod loop --video final.mp4 --props remotion_props.json --max-iterations 3
+# 自主收斂，最終輸出 {"converged": true/false, "iterations": N}
+
+go test -cover ./internal/postprod/ # ≥ 80%
+```
+
+---
+
 ## Config 範例（`~/.shand/config.yaml`）
 
 ```yaml
@@ -377,6 +535,11 @@ server:
 | 第 3 週末 | Phase 3：nano-banana-2 實際圖像生成 | ✅ |
 | 第 4 週末 | Phase 4：mp4 輸出可用 | ✅ |
 | 第 5 週末 | Phase 5：pipeline 端到端 + 開源發布 | ✅ |
+| 第 6 週末 | Phase 6：Bedrock + Polly TTS | ✅ |
+| 第 7 週末 | Phase 7：AI Critic + BGM | ✅ |
+| 第 8 週末 | Phase 8：Directives + Smart Resume | ✅ |
+| 第 9 週末 | Phase 9：多語言 + 批次 + 角色 + Critic retry | 待定 |
+| 第 10 週末 | Phase 9.5：Agentic 後製 | 待定 |
 
 ---
 
