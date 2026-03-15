@@ -1,0 +1,16 @@
+llm:
+  provider: bedrock
+  model: amazon.nova-pro-v1:0
+  aws_access_key_id: "YOUR_AWS_ACCESS_KEY_ID"
+  aws_secret_access_key: "YOUR_AWS_SECRET_ACCESS_KEY"
+  aws_region: "us-east-1"
+image:
+  provider: bedrock
+  model: amazon.nova-canvas-v1:0
+  api_key: ""
+  width: 1024
+  height: 576
+store:
+  db_path: "~/.shand/shand.db"
+audio:
+  jamendo_client_id: "YOUR_JAMENDO_CLIENT_ID"

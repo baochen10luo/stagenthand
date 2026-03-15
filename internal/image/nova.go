@@ -102,6 +102,7 @@ func (c *NovaCanvasClient) GenerateImage(ctx context.Context, prompt string, cha
 		ModelId:     aws.String(c.model),
 		Body:        body,
 		ContentType: aws.String("application/json"),
+		Accept:      aws.String("application/json"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bedrock invoke failed: %w", err)
