@@ -20,13 +20,12 @@ import (
 )
 
 var (
-	pipelineSkipHITL      bool
-	pipelineOutputDir     string
-	pipelineLanguage      string
-	pipelineMaxRetries    int
-	pipelineCriticVideo   string
-	pipelineEpisodes      int
-	pipelineBatchConc     int
+	pipelineSkipHITL   bool
+	pipelineOutputDir  string
+	pipelineLanguage   string
+	pipelineMaxRetries int
+	pipelineEpisodes   int
+	pipelineBatchConc  int
 )
 
 var pipelineCmd = &cobra.Command{
@@ -89,9 +88,9 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	// Build music client (Jamendo)
 	musicClient := audio.NewJamendoClient(cfg.Audio.JamendoClientID)
 
-	// Build critic evaluator if max retries > 0 and critic video path provided
+	// Build critic evaluator if max retries > 0 and AWS credentials are available
 	var criticEvaluator pipeline.VideoCriticEvaluator
-	if pipelineMaxRetries > 0 && pipelineCriticVideo != "" && cfg != nil &&
+	if pipelineMaxRetries > 0 && cfg != nil &&
 		cfg.LLM.AWSAccessKeyID != "" && cfg.LLM.AWSSecretAccessKey != "" {
 		bedrockClient, bedrockErr := llm.NewBedrockClient(
 			cfg.LLM.AWSAccessKeyID,
@@ -113,9 +112,6 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		Checkpoints: ckptGate,
 		DryRun:      dryRun,
 		SkipHITL:    pipelineSkipHITL,
-		Critic:      criticEvaluator,
-		MaxRetries:  pipelineMaxRetries,
-		VideoPath:   pipelineCriticVideo,
 		Language:    pipelineLanguage,
 	}
 	orch := pipeline.NewOrchestrator(deps)
@@ -144,13 +140,96 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		return stageError("pipeline", "output_error", err.Error())
 	}
 
+	// Render + AI Critic loop (only when --max-retries > 0)
+	var criticAttempts int
+	var criticApproved bool
+	var finalVideoPath string
+
+	if pipelineMaxRetries > 0 {
+		executor := remotion.NewCLIExecutor(dryRun)
+
+		rawTemplatePath := ""
+		if cfg != nil && cfg.Remotion.TemplatePath != "" {
+			rawTemplatePath = cfg.Remotion.TemplatePath
+		} else {
+			rawTemplatePath = "./remotion-template"
+		}
+		templatePath, _ := filepath.Abs(rawTemplatePath)
+
+		composition := "ShortDrama"
+		if cfg != nil && cfg.Remotion.Composition != "" {
+			composition = cfg.Remotion.Composition
+		}
+
+		propsPath := filepath.Join(pipelineOutputDir, "remotion_props.json")
+
+		for attempt := 0; attempt <= pipelineMaxRetries; attempt++ {
+			outputPath := filepath.Join(pipelineOutputDir, fmt.Sprintf("output_v%d.mp4", attempt+1))
+
+			// Render mp4
+			renderErr := executor.Render(cmd.Context(), templatePath, composition, propsPath, outputPath)
+			if renderErr != nil {
+				fmt.Fprintf(os.Stderr, "[Warning] render attempt %d failed: %v\n", attempt+1, renderErr)
+				break
+			}
+			finalVideoPath = outputPath
+
+			// Evaluate with critic (skip if no critic configured)
+			if criticEvaluator == nil {
+				break
+			}
+
+			propsJSON, _ := json.Marshal(props)
+			eval, evalErr := criticEvaluator.Evaluate(cmd.Context(), outputPath, propsJSON)
+			criticAttempts++
+			if evalErr != nil {
+				fmt.Fprintf(os.Stderr, "[Warning] critic evaluation failed: %v\n", evalErr)
+				break
+			}
+
+			if eval.IsApproved() {
+				criticApproved = true
+				break
+			}
+
+			// REJECT: adjust props for next attempt (only if there are more attempts)
+			if attempt < pipelineMaxRetries {
+				if props.Directives == nil {
+					props.Directives = &domain.Directives{}
+				}
+				if eval.VisualScore < 8 {
+					props.Directives.StylePrompt = "highly detailed, 8K, " + props.Directives.StylePrompt
+				}
+				if eval.AudioSyncScore < 8 {
+					depth := props.Directives.DuckingDepth - 0.1
+					if depth < 0.1 {
+						depth = 0.1
+					}
+					props.Directives.DuckingDepth = depth
+				}
+				if eval.ToneScore < 6 {
+					for i := range props.Panels {
+						props.Panels[i].DurationSec *= 1.2
+					}
+				}
+
+				// Write updated props for next render
+				if err := writeResults(result, props); err != nil {
+					fmt.Fprintf(os.Stderr, "[Warning] failed to write updated props: %v\n", err)
+					break
+				}
+			}
+		}
+	}
+
 	// Emit final summary to stdout (JSON)
 	summary := map[string]any{
 		"project_id":      props.ProjectID,
 		"panels":          len(props.Panels),
 		"dry_run":         dryRun,
-		"critic_attempts": result.CriticAttempts,
-		"critic_approved": result.CriticApproved,
+		"critic_attempts": criticAttempts,
+		"critic_approved": criticApproved,
+		"output_video":    finalVideoPath,
 	}
 	return json.NewEncoder(os.Stdout).Encode(summary)
 }
@@ -179,8 +258,7 @@ func init() {
 	pipelineCmd.Flags().BoolVar(&pipelineSkipHITL, "skip-hitl", false, "skip all human-in-the-loop checkpoints")
 	pipelineCmd.Flags().StringVar(&pipelineOutputDir, "output-dir", "", "output directory (default: ~/.shand/projects/<project-id>)")
 	pipelineCmd.Flags().StringVar(&pipelineLanguage, "language", "zh-TW", "TTS/dialogue language (zh-TW, en-US, en-GB, ja-JP, ko-KR, cmn-CN)")
-	pipelineCmd.Flags().IntVar(&pipelineMaxRetries, "max-retries", 0, "maximum AI Critic retry attempts (requires --critic-video)")
-	pipelineCmd.Flags().StringVar(&pipelineCriticVideo, "critic-video", "", "path to rendered mp4 for AI Critic evaluation")
+	pipelineCmd.Flags().IntVar(&pipelineMaxRetries, "max-retries", 0, "maximum AI Critic retry attempts; also triggers automatic remotion render after props generation")
 	pipelineCmd.Flags().IntVar(&pipelineEpisodes, "episodes", 1, "number of episodes to produce in batch mode")
 	pipelineCmd.Flags().IntVar(&pipelineBatchConc, "batch-concurrency", 2, "max concurrent workers in batch mode")
 	rootCmd.AddCommand(pipelineCmd)

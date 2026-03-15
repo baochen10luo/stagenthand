@@ -60,10 +60,7 @@ type OrchestratorDeps struct {
 	Audio       AudioBatcher
 	Music       MusicBatcher
 	Checkpoints CheckpointGate
-	Critic      VideoCriticEvaluator // optional, nil = skip critic
-	MaxRetries  int                  // default 0 = no retry
-	VideoPath   string               // path to rendered mp4 for critic (optional)
-	Language    string               // BCP-47 language tag for TTS/dialogue
+	Language    string // BCP-47 language tag for TTS/dialogue
 	DryRun      bool
 	SkipHITL    bool
 }
@@ -82,11 +79,9 @@ func NewOrchestrator(deps OrchestratorDeps) *Orchestrator {
 
 // PipelineResult holds the final artefacts from a complete pipeline run.
 type PipelineResult struct {
-	Storyboard     domain.Storyboard
-	Panels         []domain.Panel
-	Props          domain.RemotionProps
-	CriticAttempts int  `json:"critic_attempts"`
-	CriticApproved bool `json:"critic_approved"`
+	Storyboard domain.Storyboard
+	Panels     []domain.Panel
+	Props      domain.RemotionProps
 }
 
 func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResult, error) {
@@ -172,52 +167,10 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 		}
 	}
 
-	result := &PipelineResult{
+	return &PipelineResult{
 		Storyboard: domain.Storyboard{ProjectID: projectID, BGMURL: bgmURL, Directives: directives}, // Minimal backfill
 		Panels:     panels,
-	}
-
-	// 6. AI Critic loop (optional)
-	if o.deps.Critic != nil && o.deps.VideoPath != "" {
-		maxRetries := o.deps.MaxRetries
-		for attempt := 0; attempt <= maxRetries; attempt++ {
-			propsJSON, _ := jsonMarshal(result.Panels)
-			eval, evalErr := o.deps.Critic.Evaluate(ctx, o.deps.VideoPath, propsJSON)
-			result.CriticAttempts++
-			if evalErr != nil {
-				// evaluation error: treat as non-approved, continue
-				break
-			}
-			if eval.IsApproved() {
-				result.CriticApproved = true
-				break
-			}
-			// REJECT: adjust props for next attempt (only if there is a next attempt)
-			if attempt < maxRetries {
-				if result.Storyboard.Directives == nil {
-					result.Storyboard.Directives = &domain.Directives{}
-					directives = result.Storyboard.Directives
-				}
-				if eval.VisualScore < 8 {
-					result.Storyboard.Directives.StylePrompt = "highly detailed, 8K, " + result.Storyboard.Directives.StylePrompt
-				}
-				if eval.AudioSyncScore < 8 {
-					depth := result.Storyboard.Directives.DuckingDepth - 0.1
-					if depth < 0.1 {
-						depth = 0.1
-					}
-					result.Storyboard.Directives.DuckingDepth = depth
-				}
-				if eval.ToneScore < 6 {
-					for i := range result.Panels {
-						result.Panels[i].DurationSec *= 1.2
-					}
-				}
-			}
-		}
-	}
-
-	return result, nil
+	}, nil
 }
 
 // resolveToStoryboard determines if the input is a Story, Outline, or Storyboard
