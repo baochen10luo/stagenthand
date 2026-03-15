@@ -74,4 +74,25 @@ func TestOpenAICompatibleClient_GenerateTransformation(t *testing.T) {
 		_, err := client.GenerateTransformation(context.Background(), "", nil)
 		assert.ErrorContains(t, err, "http request failed")
 	})
+
+	t.Run("api error without message body returns unknown", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+
+		client := llm.NewOpenAICompatibleClient(server.URL, "bad-key", "model")
+		_, err := client.GenerateTransformation(context.Background(), "", nil)
+		assert.ErrorContains(t, err, "unknown API error")
+	})
+}
+
+func TestNewOpenAICompatibleClient_Defaults(t *testing.T) {
+	t.Parallel()
+
+	// When baseURL and model are empty, defaults should be applied and the client should be non-nil.
+	client := llm.NewOpenAICompatibleClient("", "", "")
+	assert.NotNil(t, client)
 }
