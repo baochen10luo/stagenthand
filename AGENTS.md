@@ -184,7 +184,10 @@ go test -cover ./... && echo "✅ Phase OK"
 - [x] Phase 1：cobra骨架 + config(viper) + domain/types + SQLite(gorm) + status/checkpoint
 - [x] Phase 2：LLM interface + story-to-outline/outline-to-storyboard/storyboard-to-panels + dry-run
 - [x] Phase 3：image interface + panel-to-image/panels-to-images + Discord notify
-- [ ] Phase 4：remotion-template + storyboard-to-remotion-props + render/preview
-- [ ] Phase 5：pipeline orchestrator + HITL四節點 + e2e test
+- [x] Phase 4：remotion-template + storyboard-to-remotion-props + render/preview
+- [x] Phase 5：pipeline orchestrator + HITL四節點 + e2e test
+- [x] Phase 6：AWS Bedrock LLM/Image + Amazon Polly TTS + 音頻同步
+- [x] Phase 7：AI Critic（多模態視頻評估）+ Jamendo BGM + 字幕淨化 + 動態時長
+- [x] Phase 8：Directives 配置系統（StylePrompt / BGMTags）+ 智能恢復機制
 
-**Current：Phase 4**
+**Current：Phase 9（規劃中）**
