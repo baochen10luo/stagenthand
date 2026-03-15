@@ -1,360 +1,392 @@
-# Phase 10 Development Plan
+# Phase 10 Development Plan (v2)
+
+> v2 修訂說明：根據架構審查，補入三項修正：
+> 1. `DialogueLine` 結構化為 **prerequisite**（所有 feature 共同基礎）
+> 2. `VideoFormat` 相關 function 移至 `internal/render/`，不污染 `domain/`
+> 3. Series 執行改為「narrative 串行 + production 並行」+ summary HITL + sliding window
+
+---
 
 ## Overview
 
-**Feature A — Multi-Speaker TTS（多角色語音）**
-目前整個 pipeline 的所有對話均使用單一 Polly 語音（由 `NewPollyCLIClientWithLanguage` 決定）。Phase 10A 的目標是讓每個已登錄角色都有自己獨立的 Polly 聲線，透過 `character.Registry` 中的語音設定（`VoiceID`）在 `AudioClientBatcher.BatchGenerateAudio` 層按 panel 路由到對應角色的 TTS client。這需要擴展 `CharacterMeta` 加入 `VoiceID` 欄位、新增 `MultiSpeakerAudioBatcher` adapter、以及在 `character register` 命令中加入 `--voice-id` 選項。
+### Phase 10.0 — Prerequisite: Structured Dialogue（所有 feature 的共同基礎）
 
-**Feature B — Vertical Video / 9:16 Format（垂直影片社群格式）**
-目前 pipeline 硬寫死 1024×576（橫版）。Feature B 新增 `--format` flag，值為 `landscape`（1024×576，預設）或 `portrait`（576×1024 for TikTok/Reels/Shorts）。尺寸選擇需要傳遞到：image generation（改寬高）、RemotionProps（`width`/`height`）、以及 Remotion template（subtitle 佈局適配）。Remotion 的 `PanelSlide` 需要根據長寬比調整字幕欄位最大寬度與字型大小。
+`Panel.Dialogue string` 重構為 `Panel.DialogueLines []DialogueLine`。每個 `DialogueLine` 帶有 `Speaker`、`Text`、`Emotion`。這是 Multi-Speaker TTS 路由、Series Memory 角色追蹤、AI Critic 對話評估的共同前提。沒有這個基礎，Feature A 只是在 `Characters[0]` 上的 hack。
 
-**Feature C — Series Continuity / Series Memory（系列記憶）**
-當以 `--episodes N` 批次生產多集時，每集之間相互獨立，沒有情節連貫性。Feature C 建立 `SeriesMemory` 機制：儲存每集的角色描述、關鍵情節事件、世界觀設定，並在後續集數的 outline/storyboard 生成 prompt 中注入前情摘要。這讓多集短劇擁有正確的故事延續性，避免角色性格突變或設定矛盾。
+### Feature A — Multi-Speaker TTS（多角色語音）
 
----
+每個已登錄角色有自己獨立的 Polly 語音設定（`VoiceID` + SSML 情緒 preset）。`MultiSpeakerAudioBatcher` 按 `DialogueLine.Speaker` 路由每一句對白到對應角色的 TTS client。`MultiSpeakerClient` interface 設計為 provider-agnostic，Polly 是第一個實作；未來接 Azure Neural TTS 或 ElevenLabs 不需改 interface。
 
-## Architecture Decisions
+### Feature B — Vertical Video / 9:16 Format（垂直影片社群格式）
 
-### Feature A — Multi-Speaker TTS
+新增 `--format landscape|portrait` flag。`VideoFormat` type 與尺寸換算函數放在 `internal/render/format.go`（**不在** `internal/domain/`）。Portrait 模式下，PanelSlide 使用 `useVideoConfig()` 動態計算 layout，並對 ken_burns 動效加入 `objectFit: cover` 防黑邊。Image provider 尺寸傳遞有 fallback 策略（provider 不支援時由 Remotion 裁切適配）。
 
-**設計選擇（ISP + DIP）**：
-- 不修改 `audio.Client` interface（Single Responsibility，避免破壞現有的 `MockClient` 和 `PollyCLIClient`）
-- 新增 `audio.MultiSpeakerClient` interface，包含 `GenerateSpeechForCharacter(ctx, text, characterName string) ([]byte, error)`
-- 新增 `PollyMultiSpeakerClient` 實作：內部維護 `map[string]*PollyCLIClient`（key=角色名），查不到則 fallback 到預設語音
-- 新增 `MultiSpeakerAudioBatcher`（在 `internal/pipeline/adapters.go` 新增，不破壞現有的 `AudioClientBatcher`）
-- `CharacterMeta` 加入 `VoiceID string` 欄位
-- `character.Registry` 加入 `GetMeta(ctx context.Context, name string) (*CharacterMeta, error)` 方法
+### Feature C — Series Continuity（系列記憶）
 
-**OrchestratorDeps 擴展**：
-`OrchestratorDeps.Audio` 從 `AudioBatcher` 介面保持不變，但 `MultiSpeakerAudioBatcher` 同樣實作 `AudioBatcher` interface，透過 `panel.Characters[0]` 路由語音。
-
-### Feature B — Vertical Video
-
-**設計選擇（OCP）**：
-- 新增 `domain.VideoFormat` 常數 type（`landscape` / `portrait`），並加入 `domain.VideoFormatDimensions(format VideoFormat) (width, height int)` pure function
-- `image.Client.GenerateImage` signature 不變（prompt + refs），改為在 factory 層按 format 選擇正確尺寸注入 `NovaCanvasClient.width/height`
-- `NanoBananaClient` 新增 `width`/`height` 欄位並在 request body 加入尺寸參數
-- `OrchestratorDeps` 新增 `Format domain.VideoFormat` 欄位
-- Remotion 的 `PanelSlide.tsx`：portrait 模式下透過 `useVideoConfig().width/height` 動態計算而非 hardcode
-
-### Feature C — Series Memory
-
-**設計選擇（SRP + OCP）**：
-- 新增 `internal/series/` package，包含：
-  - `Memory` struct（純資料，可序列化至 JSON 檔案）
-  - `Repository` interface（`Load`/`Save`）+ `FileRepository` 實作（`~/.shand/projects/<id>/series_memory.json`）
-  - `Summarizer` interface + `LLMSummarizer` 實作（呼叫 LLM 從 storyboard JSON 提取記憶）
-- `pipeline.RunBatch` 接受可選的 `SeriesMemoryRepository`，在每集完成後 append 記憶，在下一集 prompt 前注入
-- Orchestrator 本身不知道 series memory（SRP）——注入發生在 `batch.go` 的 episode loop 中，透過修改傳入下一集的 inputData（在 story prompt 前 prepend 前情摘要文字）
-- 有 SeriesRepo 時 RunBatch 自動轉為串行（因為下一集依賴上一集的摘要）；無 SeriesRepo 保持並發
+多集生產時，**只有 narrative 階段串行**（story→outline→storyboard，因為下一集需要上一集的摘要）；image/audio/render 仍然並行。每集 storyboard 完成後立即生成摘要，並進入 `StageSeriesSummary` HITL checkpoint 供人工校正。注入下一集的 context 採用 **sliding window**（預設最近 3 集完整摘要 + 1 段全系列壓縮大綱），控制 token 消耗。
 
 ---
 
-## Domain Changes
+## Phase 10.0 — Prerequisite: Structured Dialogue
 
-### `internal/domain/types.go` additions
+### Domain Change
 
 ```go
-// VideoFormat defines the output video aspect ratio.
-type VideoFormat string
+// internal/domain/types.go
 
-const (
-    VideoFormatLandscape VideoFormat = "landscape" // 1024×576 (default)
-    VideoFormatPortrait  VideoFormat = "portrait"  // 576×1024
-)
+// DialogueLine represents a single spoken line by one character.
+type DialogueLine struct {
+    Speaker string `json:"speaker"`           // character name, "" = narrator
+    Text    string `json:"text"`
+    Emotion string `json:"emotion,omitempty"` // happy | sad | angry | whisper | neutral
+}
 
-// VideoFormatDimensions returns the (width, height) for the given format.
-func VideoFormatDimensions(format VideoFormat) (width, height int) {
-    if format == VideoFormatPortrait {
-        return 576, 1024
-    }
-    return 1024, 576 // default landscape
+// Panel — replace Dialogue string with DialogueLines
+type Panel struct {
+    // ... existing fields ...
+    Dialogue      string         `json:"dialogue,omitempty"`        // DEPRECATED: kept for backward compat
+    DialogueLines []DialogueLine `json:"dialogue_lines,omitempty"`  // NEW: structured
+    // ...
 }
 ```
 
-### `internal/character/registry.go` — CharacterMeta extension
+`Dialogue` 欄位保留但標記 deprecated，舊的 TTS batcher 繼續讀它（backward compat）。新的 MultiSpeakerAudioBatcher 優先讀 `DialogueLines`，若為空則 fallback 到 `Dialogue`。
 
-```go
-type CharacterMeta struct {
-    Name      string    `json:"name"`
-    ImagePath string    `json:"image_path"`
-    VoiceID   string    `json:"voice_id,omitempty"` // Polly VoiceID, e.g. "Zhiyu"
-    CreatedAt time.Time `json:"created_at"`
-}
-```
+### LLM Prompt Change
 
-### `internal/series/types.go` — new file
+`PromptStoryboardToPanels` 的 output schema 加入 `dialogue_lines` 欄位，要求 LLM 拆分每句對白並標注說話者與情緒。同時，每個 panel 原則上只有一個主說話者（導演規則：對話場景拆為多個 panel）。
 
-```go
-type EpisodeMemory struct {
-    Episode    int                 `json:"episode"`
-    KeyEvents  []string            `json:"key_events"`
-    Characters []CharacterSnapshot `json:"characters"`
-    WorldFacts []string            `json:"world_facts"`
-}
-
-type CharacterSnapshot struct {
-    Name        string `json:"name"`
-    Description string `json:"description"`
-    Motivation  string `json:"motivation"`
-    State       string `json:"state"`
-}
-
-type SeriesMemory struct {
-    SeriesTitle string          `json:"series_title"`
-    Episodes    []EpisodeMemory `json:"episodes"`
-    UpdatedAt   time.Time       `json:"updated_at"`
-}
-```
+### Files Changed
+- `internal/domain/types.go` — 加入 `DialogueLine` struct，`Panel` 加 `DialogueLines`
+- `internal/pipeline/stages.go` — `PromptStoryboardToPanels` schema 加入 `dialogue_lines`
+- `internal/pipeline/stages_test.go` — 新增 dialogue_lines parse 測試
 
 ---
 
-## New Packages / Files
+## Feature A — Multi-Speaker TTS
 
-### Feature A
+### Architecture Decisions（ISP + DIP）
+
+- **不修改** `audio.Client` interface（`GenerateSpeech(ctx, text string)`）
+- 新增 `audio.MultiSpeakerClient` interface：
+  ```go
+  type MultiSpeakerClient interface {
+      GenerateSpeechForLine(ctx context.Context, line domain.DialogueLine) ([]byte, error)
+  }
+  ```
+- 新增 `PollyMultiSpeakerClient`：內部維護 `map[characterName]*PollyCLIClient`，查不到 fallback 到 default voice。`EmotionPresets` map 把 `DialogueLine.Emotion` 轉成 SSML `prosody`/`domain` 標籤
+- 新增 `MultiSpeakerAudioBatcher`（在 `internal/pipeline/adapters_multispeaker.go`，不改現有 `AudioClientBatcher`）
+- `CharacterMeta` 加入 `VoiceID string` + `EmotionPresets map[string]string`
+- `character.Registry` 加入 `GetMeta(ctx, name string) (*CharacterMeta, error)`
+- `OrchestratorDeps.Audio AudioBatcher` interface 不變——`MultiSpeakerAudioBatcher` 同樣實作 `AudioBatcher`
+
+### New Files
 
 | 路徑 | 用途 |
 |---|---|
 | `internal/audio/multispeaker.go` | `MultiSpeakerClient` interface + `PollyMultiSpeakerClient` 實作 |
 | `internal/audio/multispeaker_test.go` | table-driven 測試 |
-| `internal/audio/mock_multispeaker.go` | `MockMultiSpeakerClient` for pipeline tests |
-| `internal/pipeline/adapters_multispeaker.go` | `MultiSpeakerAudioBatcher` 實作 `AudioBatcher` interface |
+| `internal/audio/mock_multispeaker.go` | `MockMultiSpeakerClient` |
+| `internal/pipeline/adapters_multispeaker.go` | `MultiSpeakerAudioBatcher` 實作 `AudioBatcher` |
 | `internal/pipeline/adapters_multispeaker_test.go` | table-driven 測試 |
 
-### Feature B
+### Modified Files
 
-（無新 package，修改現有檔案）
-
-### Feature C
-
-| 路徑 | 用途 |
+| 檔案 | 修改內容 |
 |---|---|
-| `internal/series/types.go` | `EpisodeMemory`, `CharacterSnapshot`, `SeriesMemory` 資料結構 |
-| `internal/series/repository.go` | `Repository` interface（`Load`, `Save`, `Append`） |
-| `internal/series/file_repository.go` | `FileRepository` 實作（JSON 持久化） |
-| `internal/series/file_repository_test.go` | 測試 |
-| `internal/series/summarizer.go` | `Summarizer` interface + `LLMSummarizer` 實作 |
-| `internal/series/summarizer_test.go` | mock LLM 測試 |
-| `internal/series/mock.go` | `MockRepository` + `MockSummarizer` |
+| `internal/character/registry.go` | `CharacterMeta` 加 `VoiceID`, `EmotionPresets`；`Registry` interface 加 `GetMeta` |
+| `internal/character/file_registry.go` | 實作 `GetMeta`；`Register` 寫入新 meta 欄位 |
+| `internal/character/mock.go` | 實作 `GetMeta` mock |
+| `cmd/character.go` | `register` 子命令加 `--voice-id` flag |
+| `cmd/pipeline.go` | 加 `--multi-speaker` flag；按此 flag 選擇注入 `MultiSpeakerAudioBatcher` 或舊的 `AudioClientBatcher` |
+
+### CLI
+
+```
+shand pipeline --multi-speaker
+  Enable per-character voice routing. Each DialogueLine.Speaker is looked up
+  in the character registry for its VoiceID and EmotionPresets.
+  Falls back to --language default if speaker not found. (default: false)
+
+shand character register <name>
+  --voice-id string   Polly VoiceID (e.g. Zhiyu, Joanna, Takumi)
+```
 
 ---
 
-## Modified Files
+## Feature B — Vertical Video / 9:16 Format
 
-### Feature A
+### Architecture Decisions（OCP）
+
+- `VideoFormat` type 和尺寸換算放在 `internal/render/format.go`（**不在 domain/**）
+- `internal/domain/types.go` 不改動（domain 只含純業務資料）
+- Image provider：接受 width/height 參數，若 provider 不支援自訂尺寸，由 `ImageBatcher` 層在取回圖片後 crop/letterbox 到目標比例
+- Remotion `PanelSlide.tsx`：portrait 動效防黑邊：image container 加 `objectFit: 'cover'`，ken_burns scale 從 canvas 長邊計算
+- `internal/remotion/props.go` 的 `PanelsToProps` 接受 `render.VideoFormat` 參數
+
+### New Files
+
+| 路徑 | 用途 |
+|---|---|
+| `internal/render/format.go` | `VideoFormat` type + constants + `Dimensions()` method |
+| `internal/render/format_test.go` | table-driven 測試 |
+
+### Modified Files
 
 | 檔案 | 修改內容 |
 |---|---|
-| `internal/character/registry.go` | `Registry` interface 新增 `GetMeta`；`CharacterMeta` 加 `VoiceID` |
-| `internal/character/file_registry.go` | 實作 `GetMeta`；`Register` 支援 VoiceID 寫入 meta.json |
-| `internal/character/mock.go` | 實作 `GetMeta` mock |
-| `cmd/character.go` | `register` 子命令新增 `--voice-id` flag |
-| `cmd/pipeline.go` | 新增 `--multi-speaker` flag；構建並注入 `MultiSpeakerAudioBatcher` |
+| `internal/image/nanobanana.go` | 加 `width`/`height` 欄位，request body 嘗試傳入尺寸 |
+| `internal/image/nanobanana.go` | 若 API 回傳非目標比例，`GenerateImage` 內部 crop 到正確比例 |
+| `internal/remotion/props.go` | `PanelsToProps` 接受 `render.VideoFormat`，設定 props width/height |
+| `cmd/pipeline.go` | 加 `--format` flag，傳遞到 image factory 和 `PanelsToProps` |
+| `cmd/remotion_render.go` | 加 `--format` flag |
+| `remotion-template/src/components/PanelSlide.tsx` | portrait 模式：`objectFit: cover`；字幕 `maxWidth`/`fontSize` 用 `useVideoConfig()` 動態計算 |
 
-### Feature B
+### CLI
+
+```
+shand pipeline --format <landscape|portrait>
+  landscape = 1024×576 (default), portrait = 576×1024 (TikTok/Reels/Shorts)
+  Controls image generation dimensions and Remotion canvas. (default: "landscape")
+
+shand remotion-render --format <landscape|portrait>
+```
+
+---
+
+## Feature C — Series Continuity
+
+### Architecture Decisions（SRP + pipeline parallelism）
+
+#### 執行模型：只串行 narrative 階段
+
+```
+Episode 1:  [narrative: story→outline→storyboard] → [summarize+HITL] ─┐
+                                                                        ↓ context injected
+Episode 2:  [narrative: story→outline→storyboard] → [summarize+HITL] ─┐
+                                                                        ↓
+Episode 3:  [narrative: ...]
+            ↑ narrative is serial
+
+Meanwhile:
+Episode 1:  [production: image+audio+render] ← runs in parallel with Ep2 narrative
+Episode 2:  [production: ...]
+```
+
+`RunBatch` 拆為兩個 goroutine pool：`narrativePool`（concurrency=1）和 `productionPool`（concurrency=`BatchConfig.Concurrency`）。narrative 完成後把任務送進 productionPool。
+
+#### Sliding Window Context
+
+```go
+type SeriesContextWindow struct {
+    RecentEpisodes []EpisodeMemory // 最近 N 集（預設 3）
+    GlobalSummary  string          // 全系列壓縮大綱（由 LLM 每集更新）
+}
+```
+
+注入到下一集的 prompt 結構：
+```
+[SERIES_CONTEXT]
+Global: <全系列一段壓縮大綱>
+Recent:
+  Ep1: <key events bullet list>
+  Ep2: <key events bullet list>
+[/SERIES_CONTEXT]
+
+<原始 story prompt>
+```
+
+#### StageSeriesSummary HITL Checkpoint
+
+`domain.CheckpointStage` 加入 `StageSeriesSummary`。每集 storyboard 完成後：
+1. `LLMSummarizer` 產生 `EpisodeMemory`
+2. 進入 `StageSeriesSummary` checkpoint，使用者可：
+   - `shand checkpoint approve <id>` — 採用摘要，繼續下一集
+   - `shand checkpoint reject <id> --notes "角色名應是小芸"` — 摘要被標記，手動編輯 `series_memory.json` 後再 approve
+3. approve 後才注入下一集 context
+
+### New Files
+
+| 路徑 | 用途 |
+|---|---|
+| `internal/series/types.go` | `EpisodeMemory`, `CharacterSnapshot`, `SeriesMemory`, `SeriesContextWindow` |
+| `internal/series/repository.go` | `Repository` interface（`Load`, `Save`, `Append`） |
+| `internal/series/file_repository.go` | `FileRepository`（JSON → `<output-dir>/series_memory.json`） |
+| `internal/series/file_repository_test.go` | 測試 |
+| `internal/series/summarizer.go` | `Summarizer` interface + `LLMSummarizer` + `PromptExtractEpisodeMemory` + `PromptCompressGlobalSummary` |
+| `internal/series/summarizer_test.go` | mock LLM 測試 |
+| `internal/series/context.go` | `BuildContextWindow(memory, windowSize int) SeriesContextWindow` pure function |
+| `internal/series/context_test.go` | window size / token 估算測試 |
+| `internal/series/mock.go` | `MockRepository`, `MockSummarizer` |
+
+### Modified Files
 
 | 檔案 | 修改內容 |
 |---|---|
-| `internal/domain/types.go` | 新增 `VideoFormat` type + `VideoFormatDimensions` |
-| `internal/image/nanobanana.go` | 加 `width`/`height` 欄位，request body 加尺寸 |
-| `internal/image/factory.go` | 按 format 注入尺寸到 client constructor |
-| `internal/remotion/props.go` | `PanelsToProps` 接受 `format` 參數，調用 `VideoFormatDimensions` |
-| `cmd/pipeline.go` | 新增 `--format` flag；傳遞到 image client 和 remotion props |
-| `cmd/remotion_render.go` | 新增 `--format` flag |
-| `remotion-template/src/components/PanelSlide.tsx` | 引入 `useVideoConfig`；portrait 模式字幕 maxWidth/fontSize 動態調整 |
+| `internal/domain/types.go` | `CheckpointStage` 加入 `StageSeriesSummary` |
+| `internal/pipeline/batch.go` | 拆 narrative/production goroutine pool；加 `SeriesRepo`/`Summarizer`/`WindowSize` 到 `BatchConfig`；注入 context 到下一集 inputData |
+| `internal/pipeline/batch_test.go` | series 串接 + 並行 production 測試 |
+| `cmd/pipeline.go` | 加 `--series-memory` + `--series-window` flags |
 
-### Feature C
+### CLI
 
-| 檔案 | 修改內容 |
-|---|---|
-| `internal/pipeline/batch.go` | `BatchConfig` 加 `SeriesRepo`/`Summarizer`；有 repo 時串行並注入前情摘要 |
-| `internal/pipeline/batch_test.go` | 新增 series memory 相關測試 |
-| `cmd/pipeline.go` | 新增 `--series-memory` flag；構建 `FileRepository`/`LLMSummarizer` |
+```
+shand pipeline --episodes N --series-memory
+  Enable series continuity. Narrative stages are serialized; production
+  (image/audio/render) remains concurrent. Each episode's storyboard
+  triggers a series-summary HITL checkpoint before the next episode starts.
+  Memory persisted to <output-dir>/series_memory.json. (default: false)
+
+  --series-window int   Number of recent episodes to inject as full context.
+                        A compressed global summary is always included.
+                        (default: 3)
+```
 
 ---
 
 ## Implementation Order — TDD Sequence
 
-### Feature A（建議先做）
+### Phase 10.0 — Prerequisite（先做）
 
-1. `[RED]` `TestGetMeta` table-driven test in `file_registry_test.go`
-2. `[GREEN]` `CharacterMeta.VoiceID` + `Registry.GetMeta` + `FileRegistry.GetMeta`
-3. `[VERIFY]` `go test ./internal/character/`
-4. `[RED]` `TestPollyMultiSpeakerClient_GenerateSpeechForCharacter`
-5. `[GREEN]` `internal/audio/multispeaker.go`
-6. `[VERIFY]` `go test ./internal/audio/`
-7. `[RED]` `TestMultiSpeakerAudioBatcher_BatchGenerateAudio`
-8. `[GREEN]` `internal/pipeline/adapters_multispeaker.go`
-9. `[VERIFY]` `go test ./internal/pipeline/`
-10. `[INTEGRATE]` `cmd/character.go` (`--voice-id`) + `cmd/pipeline.go` (`--multi-speaker`)
-11. `[E2E]` `echo "test" | ./shand pipeline --skip-hitl --dry-run --multi-speaker`
-
-### Feature B
-
-1. `[RED]` `TestVideoFormatDimensions` table-driven in `internal/domain/`
-2. `[GREEN]` `domain.VideoFormat` + `VideoFormatDimensions`
-3. `[VERIFY]` `go test ./internal/domain/`
-4. `[RED]` `TestNanoBananaClient_PortraitDimensions`
-5. `[GREEN]` `internal/image/nanobanana.go` width/height
-6. `[VERIFY]` `go test ./internal/image/`
-7. `[INTEGRATE]` factory → remotion.PanelsToProps → `cmd/pipeline.go --format`
-8. `[REMOTION]` `PanelSlide.tsx` portrait 響應式字幕
-9. `[E2E]` `echo "test" | ./shand pipeline --skip-hitl --dry-run --format portrait`（驗證 props width=576, height=1024）
-
-### Feature C（最後做，相依性最高）
-
-1. `[RED]` `TestSeriesMemory_JSONRoundTrip`
-2. `[GREEN]` `internal/series/types.go`
-3. `[RED]` `TestFileRepository_LoadSaveAppend`
-4. `[GREEN]` `internal/series/file_repository.go`
-5. `[VERIFY]` `go test ./internal/series/`
-6. `[RED]` `TestLLMSummarizer_Summarize` (mock LLM)
-7. `[GREEN]` `internal/series/summarizer.go`
-8. `[RED]` `TestRunBatch_WithSeriesMemory`
-9. `[GREEN]` `internal/pipeline/batch.go` series 串接邏輯
-10. `[INTEGRATE]` `cmd/pipeline.go --series-memory`
-11. `[E2E]` `echo "機器人" | ./shand pipeline --skip-hitl --dry-run --episodes 3 --series-memory`
-
----
-
-## CLI Surface
+1. `[RED]` `TestDialogueLine_JSONRoundTrip` + `TestPanel_DialogueLinesBackwardCompat`
+2. `[GREEN]` `internal/domain/types.go`：加 `DialogueLine`，`Panel` 加 `DialogueLines`
+3. `[RED]` `TestPromptStoryboardToPanels_IncludesDialogueLines`（驗證 LLM schema 有 dialogue_lines）
+4. `[GREEN]` `internal/pipeline/stages.go` prompt schema 更新
+5. `[VERIFY]` `go test ./internal/domain/ ./internal/pipeline/`
 
 ### Feature A
 
-```
-shand pipeline
-  --multi-speaker    Enable per-character voice routing via character registry.
-                     Characters[0] in each panel is looked up for its VoiceID.
-                     Falls back to --language default if not found. (default: false)
-
-shand character register <name>
-  --voice-id string  Polly VoiceID for this character (e.g. Zhiyu, Joanna, Takumi).
-                     Stored in character meta. Used by --multi-speaker mode.
-```
+6. `[RED]` `TestGetMeta_Found` / `TestGetMeta_NotFound`
+7. `[GREEN]` `CharacterMeta.VoiceID/EmotionPresets` + `FileRegistry.GetMeta`
+8. `[RED]` `TestPollyMultiSpeaker_RouteByDialogueLine`（含 emotion → SSML 轉換）
+9. `[GREEN]` `internal/audio/multispeaker.go`
+10. `[RED]` `TestMultiSpeakerBatcher_PerLineRouting` / `TestMultiSpeakerBatcher_FallbackToDialogue`
+11. `[GREEN]` `internal/pipeline/adapters_multispeaker.go`
+12. `[INTEGRATE]` `cmd/character.go --voice-id` + `cmd/pipeline.go --multi-speaker`
+13. `[VERIFY]` `go test ./internal/character/ ./internal/audio/ ./internal/pipeline/`
 
 ### Feature B
 
-```
-shand pipeline
-  --format string    Output video format: landscape (1024×576, default) or
-                     portrait (576×1024 for TikTok/Reels/Shorts).
-                     Controls image generation dimensions and Remotion canvas.
-                     (default: "landscape")
-
-shand remotion-render
-  --format string    Override width/height in props for rendering.
-                     (default: "landscape")
-```
+14. `[RED]` `TestVideoFormat_Dimensions` / `TestVideoFormat_Default`
+15. `[GREEN]` `internal/render/format.go`
+16. `[RED]` `TestNanoBananaClient_PortraitRequest`
+17. `[GREEN]` `internal/image/nanobanana.go` width/height + fallback crop
+18. `[INTEGRATE]` `internal/remotion/props.go` + `cmd/pipeline.go --format`
+19. `[REMOTION]` `PanelSlide.tsx` objectFit + 動態字幕 layout
+20. `[VERIFY]` `go test ./internal/render/ ./internal/image/ ./internal/pipeline/`
 
 ### Feature C
 
-```
-shand pipeline
-  --series-memory    Enable series continuity across episodes.
-                     Each episode's LLM prompts include a summary of previous
-                     episodes' characters, key events, and world-building facts.
-                     Requires --episodes > 1. Persisted to <output-dir>/series_memory.json.
-                     (default: false)
-```
+21. `[RED]` Series types JSON round-trip
+22. `[GREEN]` `internal/series/types.go`
+23. `[RED]` `TestFileRepository_LoadSaveAppend`
+24. `[GREEN]` `internal/series/file_repository.go`
+25. `[RED]` `TestBuildContextWindow_SlidingWindow` / `TestBuildContextWindow_TokenBudget`
+26. `[GREEN]` `internal/series/context.go`
+27. `[RED]` `TestLLMSummarizer_Summarize` / `TestLLMSummarizer_CompressGlobal`
+28. `[GREEN]` `internal/series/summarizer.go`
+29. `[RED]` `TestRunBatch_NarrativeSerial_ProductionParallel`
+30. `[GREEN]` `internal/pipeline/batch.go` 兩池架構
+31. `[INTEGRATE]` `cmd/pipeline.go --series-memory --series-window`
+32. `[VERIFY]` `go test -cover ./... >= 80%`
 
 ---
 
 ## Test Plan
 
+### Phase 10.0 Prerequisite
+
+| Test | 期望 |
+|---|---|
+| `TestDialogueLine_JSONRoundTrip` | Speaker/Text/Emotion 序列化正確 |
+| `TestPanel_DialogueLinesBackwardCompat` | 舊 Dialogue string 仍可讀取，DialogueLines 為空時 fallback |
+| `TestPromptStoryboardToPanels_IncludesDialogueLines` | prompt schema 包含 `dialogue_lines` 欄位定義 |
+
 ### Feature A
 
-| Test | 描述 | 期望 |
-|---|---|---|
-| `TestGetMeta_Found` | 已登錄角色回傳正確 meta（含 VoiceID） | `CharacterMeta{VoiceID: "Zhiyu"}`, nil |
-| `TestGetMeta_NotFound` | 未登錄角色 | nil, nil |
-| `TestPollyMultiSpeaker_KnownCharacter` | 已知角色用正確 voiceID | cmd args 含 `--voice-id Zhiyu` |
-| `TestPollyMultiSpeaker_FallbackLanguage` | 未知角色 fallback | 使用語言預設語音 |
-| `TestMultiSpeakerBatcher_RouteByCharacter` | 按 `Characters[0]` 路由 | 正確 audio client 被呼叫 |
-| `TestMultiSpeakerBatcher_EmptyCharacters` | panel 無角色用預設聲線 | default client 被呼叫 |
-| `TestMultiSpeakerBatcher_SmartResume` | 已有 mp3 跳過生成 | audio.Client NOT called |
-| `TestCharacterRegister_WithVoiceID` | CLI register 儲存 VoiceID | meta.json 含正確 VoiceID |
+| Test | 期望 |
+|---|---|
+| `TestGetMeta_Found` | 回傳正確 `CharacterMeta`（含 VoiceID） |
+| `TestGetMeta_NotFound` | 回傳 nil, nil |
+| `TestPollyMultiSpeaker_RouteByDialogueLine` | 已知 speaker → 正確 voiceID；未知 → fallback |
+| `TestPollyMultiSpeaker_EmotionToSSML` | `angry` → `<prosody rate="fast">`；`whisper` → whisper domain |
+| `TestMultiSpeakerBatcher_PerLineRouting` | 三句不同 speaker → 三次不同 client 呼叫 |
+| `TestMultiSpeakerBatcher_FallbackToDialogue` | `DialogueLines` 空時讀 `Dialogue` |
+| `TestMultiSpeakerBatcher_SmartResume` | 已有 mp3 → 跳過生成 |
 
 ### Feature B
 
-| Test | 描述 | 期望 |
-|---|---|---|
-| `TestVideoFormatDimensions_Landscape` | landscape 尺寸正確 | 1024, 576 |
-| `TestVideoFormatDimensions_Portrait` | portrait 尺寸正確 | 576, 1024 |
-| `TestVideoFormatDimensions_Default` | 未知值 fallback | 1024, 576 |
-| `TestNanoBananaClient_PortraitRequest` | request body 含正確尺寸 | size field 匹配 |
-| `TestPanelsToProps_Format` | props 有正確 width/height | props.Width=576, props.Height=1024 |
+| Test | 期望 |
+|---|---|
+| `TestVideoFormat_Landscape` | `Dimensions()` → 1024, 576 |
+| `TestVideoFormat_Portrait` | `Dimensions()` → 576, 1024 |
+| `TestVideoFormat_Unknown` | fallback → 1024, 576 |
+| `TestNanoBananaClient_PortraitRequest` | request body 含正確尺寸 |
+| `TestPanelsToProps_Portrait` | props.Width=576, props.Height=1024 |
 
 ### Feature C
 
-| Test | 描述 | 期望 |
-|---|---|---|
-| `TestSeriesMemory_JSONRoundTrip` | 序列化/反序列化 | 完全相同結構 |
-| `TestFileRepository_Load_Empty` | 無檔案回傳空 memory | `&SeriesMemory{}`, nil |
-| `TestFileRepository_Append` | Append 後正確累積 | `Episodes` 長度正確 |
-| `TestLLMSummarizer_PromptContainsStoryboard` | prompt 含 storyboard JSON | mock client 收到正確 prompt |
-| `TestRunBatch_SeriesContext_Injected` | 第 2 集 input 含前情摘要 | inputData 含 `[SERIES_CONTEXT]` |
-| `TestRunBatch_NoSeriesRepo_Concurrent` | 無 repo 保持並發 | 2 goroutines 並發執行 |
-| `TestRunBatch_SeriesRepo_Sequential` | 有 repo 轉串行 | ep2 在 ep1 完成後才開始 |
+| Test | 期望 |
+|---|---|
+| `TestBuildContextWindow_SlidingWindow` | 6 集只取最近 3 集 EpisodeMemory |
+| `TestBuildContextWindow_Always_GlobalSummary` | window=0 仍有 GlobalSummary |
+| `TestLLMSummarizer_Summarize` | mock LLM → EpisodeMemory 正確 parse |
+| `TestLLMSummarizer_CompressGlobal` | mock LLM → GlobalSummary string |
+| `TestRunBatch_NarrativeSerial` | ep2 narrative 在 ep1 summarize+approve 後才啟動 |
+| `TestRunBatch_ProductionParallel` | ep1+ep2 production 同時執行 |
+| `TestRunBatch_NoSeriesRepo_FullConcurrent` | SeriesRepo=nil → 完全並發（原有行為不變） |
 
 ---
 
 ## Anti-Patterns to Avoid
 
-1. **禁止在 `cmd/pipeline.go` 直接判斷角色語音**：路由邏輯必須在 `internal/pipeline/adapters_multispeaker.go` 或 `internal/audio/multispeaker.go`
-2. **禁止修改 `audio.Client` interface**：`GenerateSpeech(ctx, text)` 簽名不變。另開 `MultiSpeakerClient` interface（ISP）
-3. **禁止在 `domain/types.go` 加入帶副作用的方法**：`VideoFormatDimensions` 是 pure function，不可有 os/io/network 相依
-4. **禁止在 Remotion template 硬寫尺寸判斷**：portrait/landscape 判斷必須從 `useVideoConfig()` 動態取得
-5. **禁止讓 `RunBatch` 知道 LLM 細節**：透過 `series.Summarizer` interface 取得摘要，不得直接持有 `llm.Client`
-6. **禁止 `interface{}` 在 Series Memory 中**：所有欄位必須有明確型別
-7. **禁止在 portrait 模式中靜默截斷字幕**：必須動態調整 font size 或加 overflow 處理
-8. **禁止 `--series-memory` 在 dry-run 下呼叫真實 LLM 摘要**：dry-run 模式回傳 mock EpisodeMemory
-9. **禁止破壞現有 `AudioClientBatcher`**：Feature A 是新增，`--multi-speaker=false` 時繼續用原有 batcher
+1. **禁止把 `VideoFormat` 放進 `domain/types.go`**：domain 只含業務資料，output format 是 presentation concern，放 `internal/render/`
+2. **禁止 `MultiSpeakerAudioBatcher` 讀 `panel.Characters[0]`**：必須讀 `DialogueLine.Speaker`，不然 Phase 10.0 白做
+3. **禁止修改 `audio.Client` interface**：新開 `MultiSpeakerClient`，原有 `AudioClientBatcher` 完全不動
+4. **禁止 Series 全串行**：只有 narrative（story→storyboard）串行，production（image+audio+render）必須並行
+5. **禁止無上限注入所有集數的摘要**：sliding window 強制執行，`BuildContextWindow` 有 `windowSize` 參數
+6. **禁止 `LLMSummarizer` 在 dry-run 呼叫真實 API**：dry-run 回傳 stub `EpisodeMemory`
+7. **禁止 `SeriesMemory` 和 `character.Registry` 對同一角色用不同 key**：必須統一用角色的 canonical name（`CharacterMeta.Name`）
 
 ---
 
 ## Milestone Checklist
 
+### Phase 10.0 — Prerequisite
+
+- [ ] P1: `domain.DialogueLine` struct + `Panel.DialogueLines` 欄位
+- [ ] P2: Backward compat：舊 `Dialogue` string 仍可讀
+- [ ] P3: `PromptStoryboardToPanels` schema 加入 `dialogue_lines`
+- [ ] P4: 相關測試通過
+
 ### Feature A — Multi-Speaker TTS
 
-- [ ] A1: `CharacterMeta.VoiceID` 欄位，`FileRegistry` 讀寫 VoiceID 至 meta.json
-- [ ] A2: `character.Registry` interface 新增 `GetMeta`
-- [ ] A3: `FileRegistry.GetMeta` 實作 + 測試通過
-- [ ] A4: `character.MockRegistry.GetMeta` mock 實作
-- [ ] A5: `audio.MultiSpeakerClient` interface（`multispeaker.go`）
-- [ ] A6: `PollyMultiSpeakerClient` 實作 + 測試通過
-- [ ] A7: `MockMultiSpeakerClient`（`mock_multispeaker.go`）
-- [ ] A8: `MultiSpeakerAudioBatcher` 實作 + 測試通過
-- [ ] A9: `cmd/character.go` 新增 `--voice-id` flag
-- [ ] A10: `cmd/pipeline.go` 新增 `--multi-speaker` flag + 注入邏輯
-- [ ] A11: `go test -cover ./internal/character/ ./internal/audio/ ./internal/pipeline/` ≥ 80%
-- [ ] A12: E2E dry-run 驗收通過
+- [ ] A1: `CharacterMeta.VoiceID` + `EmotionPresets` + `FileRegistry.GetMeta`
+- [ ] A2: `audio.MultiSpeakerClient` interface（provider-agnostic）
+- [ ] A3: `PollyMultiSpeakerClient`（emotion → SSML 轉換）+ 測試
+- [ ] A4: `MockMultiSpeakerClient`
+- [ ] A5: `MultiSpeakerAudioBatcher`（讀 `DialogueLines`，fallback 到 `Dialogue`）+ 測試
+- [ ] A6: `cmd/character.go --voice-id` + `cmd/pipeline.go --multi-speaker`
+- [ ] A7: `go test -cover ./internal/character/ ./internal/audio/ ./internal/pipeline/ >= 80%`
 
 ### Feature B — Vertical Video
 
-- [ ] B1: `domain.VideoFormat` type + constants + `VideoFormatDimensions`
-- [ ] B2: domain 測試通過
-- [ ] B3: `NanoBananaClient` width/height + request body 尺寸
-- [ ] B4: image 測試通過
-- [ ] B5: `NovaCanvasClient` portrait 尺寸確認
-- [ ] B6: `image.NewClient` factory 按 format 注入尺寸
-- [ ] B7: `remotion.PanelsToProps` 接受 format 參數
-- [ ] B8: `cmd/pipeline.go` + `cmd/remotion_render.go` 新增 `--format` flag
-- [ ] B9: `PanelSlide.tsx` portrait 響應式字幕
-- [ ] B10: `go test -cover ./internal/domain/ ./internal/image/ ./internal/pipeline/` ≥ 80%
-- [ ] B11: E2E dry-run 驗收：props 含 width=576, height=1024
+- [ ] B1: `internal/render/format.go`（`VideoFormat` + `Dimensions()`）+ 測試
+- [ ] B2: `NanoBananaClient` width/height + fallback crop 策略
+- [ ] B3: `internal/remotion/props.go` 接受 `render.VideoFormat`
+- [ ] B4: `cmd/pipeline.go --format` + `cmd/remotion_render.go --format`
+- [ ] B5: `PanelSlide.tsx`：`objectFit: cover` + portrait 響應式字幕
+- [ ] B6: `go test -cover ./internal/render/ ./internal/image/ >= 80%`
 
 ### Feature C — Series Continuity
 
-- [ ] C1: `internal/series/types.go` + JSON round-trip 測試
-- [ ] C2: `internal/series/repository.go` interface
-- [ ] C3: `internal/series/file_repository.go` + 測試
-- [ ] C4: `internal/series/mock.go`（`MockRepository`）
-- [ ] C5: `internal/series/summarizer.go` interface + `PromptExtractEpisodeMemory` 常數
-- [ ] C6: `LLMSummarizer` 實作 + 測試（mock LLM）
-- [ ] C7: `internal/series/mock.go`（`MockSummarizer`）
-- [ ] C8: `BatchConfig` 加 `SeriesRepo`/`Summarizer` 欄位
-- [ ] C9: `RunBatch` series 串接邏輯 + 測試
-- [ ] C10: `cmd/pipeline.go` 新增 `--series-memory` flag
-- [ ] C11: `go test -cover ./internal/series/ ./internal/pipeline/` ≥ 80%
-- [ ] C12: E2E dry-run：`--episodes 3 --series-memory` 驗收
-- [ ] C13: 全專案 `go test -cover ./...` ≥ 80%
+- [ ] C1: `internal/series/types.go`（含 `SeriesContextWindow`）+ JSON 測試
+- [ ] C2: `internal/series/file_repository.go` + 測試
+- [ ] C3: `internal/series/context.go`（`BuildContextWindow` sliding window）+ 測試
+- [ ] C4: `internal/series/summarizer.go`（`LLMSummarizer` + `PromptExtractEpisodeMemory` + `PromptCompressGlobalSummary`）+ 測試
+- [ ] C5: `internal/series/mock.go`
+- [ ] C6: `domain.StageSeriesSummary` checkpoint stage
+- [ ] C7: `internal/pipeline/batch.go` 雙池架構（narrative serial + production parallel）+ 測試
+- [ ] C8: `cmd/pipeline.go --series-memory --series-window`
+- [ ] C9: `go test -cover ./internal/series/ ./internal/pipeline/ >= 80%`
+- [ ] C10: 全專案 `go test -cover ./... >= 80%`
