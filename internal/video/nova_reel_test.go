@@ -152,3 +152,156 @@ func TestGenerateShot_InvalidImagePath(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read image")
 }
+
+func TestParseS3URI(t *testing.T) {
+	tests := []struct {
+		name       string
+		uri        string
+		wantBucket string
+		wantKey    string
+		wantErr    bool
+	}{
+		{"valid s3 URI", "s3://mybucket/some/key.mp4", "mybucket", "some/key.mp4", false},
+		{"valid s3 URI with trailing slash", "s3://mybucket/output/", "mybucket", "output/", false},
+		{"invalid scheme http", "http://mybucket/key", "", "", true},
+		{"invalid scheme https", "https://mybucket/key", "", "", true},
+		{"empty scheme", "://bad", "", "", true},
+		{"no scheme", "mybucket/key", "", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bucket, key, err := parseS3URI(tt.uri)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantBucket, bucket)
+			assert.Equal(t, tt.wantKey, key)
+		})
+	}
+}
+
+func TestNewNovaReelClient(t *testing.T) {
+	// NewNovaReelClient should succeed with valid region and credentials
+	// (AWS SDK does not validate credentials at config load time)
+	client, err := NewNovaReelClient("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "us-east-1", "test-bucket")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+	assert.Equal(t, "test-bucket", client.s3Bucket)
+	assert.Equal(t, defaultPollInterval, client.pollInterval)
+	assert.Equal(t, defaultMaxWait, client.maxWait)
+}
+
+func TestNewNovaReelClient_DefaultRegion(t *testing.T) {
+	// When region is empty, it should default to us-east-1 and still succeed
+	client, err := NewNovaReelClient("AKID", "SECRET", "", "my-bucket")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestGenerateShot_S3URIDirectoryAppendOutputMp4(t *testing.T) {
+	// When the S3 URI key does not end in .mp4, GenerateShot appends /output.mp4
+	expectedMP4 := []byte("mp4-data")
+	mock := &mockBedrockAsync{
+		startResult: "arn:aws:bedrock:us-east-1:123:async-invoke/dir-test",
+		getStatuses: []asyncInvokeResult{
+			{status: "Completed", s3URI: "s3://bucket/reel-output/dir-test"},
+		},
+	}
+	mockS3 := &mockS3Downloader{data: expectedMP4}
+
+	client := &NovaReelClient{
+		bedrock:      mock,
+		s3Downloader: mockS3,
+		s3Bucket:     "bucket",
+		pollInterval: 10 * time.Millisecond,
+		maxWait:      5 * time.Second,
+	}
+
+	result, err := client.GenerateShot(context.Background(), "testdata/panel.jpg", "prompt")
+	require.NoError(t, err)
+	assert.Equal(t, expectedMP4, result)
+	// Key should have /output.mp4 appended
+	assert.Equal(t, "reel-output/dir-test/output.mp4", mockS3.capturedKey)
+}
+
+func TestGenerateShot_GetAsyncInvokeError(t *testing.T) {
+	mock := &mockBedrockAsync{
+		startResult: "arn:aws:bedrock:us-east-1:123:async-invoke/poll-err",
+		getStatuses: []asyncInvokeResult{},
+	}
+	// Override GetAsyncInvoke to return error by using a custom mock
+	errMock := &mockBedrockAsyncWithGetError{
+		mockBedrockAsync: mock,
+		getErr:           errors.New("network timeout"),
+	}
+
+	client := &NovaReelClient{
+		bedrock:      errMock,
+		s3Downloader: &mockS3Downloader{},
+		s3Bucket:     "bucket",
+		pollInterval: 10 * time.Millisecond,
+		maxWait:      5 * time.Second,
+	}
+
+	_, err := client.GenerateShot(context.Background(), "testdata/panel.jpg", "prompt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "poll async invoke")
+}
+
+// mockBedrockAsyncWithGetError wraps mockBedrockAsync but returns an error on GetAsyncInvoke.
+type mockBedrockAsyncWithGetError struct {
+	*mockBedrockAsync
+	getErr error
+}
+
+func (m *mockBedrockAsyncWithGetError) GetAsyncInvoke(ctx context.Context, invocationArn string) (status, s3URI, failureMsg string, err error) {
+	return "", "", "", m.getErr
+}
+
+func TestGenerateShot_InvalidS3URIFromCompleted(t *testing.T) {
+	// When Completed returns an invalid S3 URI, GenerateShot should return parseS3URI error
+	mock := &mockBedrockAsync{
+		startResult: "arn:aws:bedrock:us-east-1:123:async-invoke/bad-uri",
+		getStatuses: []asyncInvokeResult{
+			{status: "Completed", s3URI: "http://not-s3/path"},
+		},
+	}
+
+	client := &NovaReelClient{
+		bedrock:      mock,
+		s3Downloader: &mockS3Downloader{},
+		s3Bucket:     "bucket",
+		pollInterval: 10 * time.Millisecond,
+		maxWait:      5 * time.Second,
+	}
+
+	_, err := client.GenerateShot(context.Background(), "testdata/panel.jpg", "prompt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse S3 output URI")
+}
+
+func TestGenerateShot_ContextCancelled(t *testing.T) {
+	mock := &mockBedrockAsync{
+		startResult:      "arn:aws:bedrock:us-east-1:123:async-invoke/ctx-cancel",
+		alwaysInProgress: true,
+	}
+
+	client := &NovaReelClient{
+		bedrock:      mock,
+		s3Downloader: &mockS3Downloader{},
+		s3Bucket:     "bucket",
+		pollInterval: 10 * time.Millisecond,
+		maxWait:      10 * time.Second, // long enough that context cancels first
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately so the select picks up ctx.Done()
+	cancel()
+
+	_, err := client.GenerateShot(ctx, "testdata/panel.jpg", "prompt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
