@@ -64,6 +64,66 @@ func TestRunTransformationStage(t *testing.T) {
 	})
 }
 
+func TestLangInstruction(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		lang        string
+		wantEmpty   bool
+		wantContain string
+	}{
+		{lang: "en-US", wantEmpty: false, wantContain: "English"},
+		{lang: "en-GB", wantEmpty: false, wantContain: "English"},
+		{lang: "ja-JP", wantEmpty: false, wantContain: "Japanese"},
+		{lang: "ko-KR", wantEmpty: false, wantContain: "Korean"},
+		{lang: "zh-TW", wantEmpty: true},
+		{lang: "cmn-CN", wantEmpty: true},
+		{lang: "", wantEmpty: true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.lang, func(t *testing.T) {
+			t.Parallel()
+			got := pipeline.LangInstruction(tc.lang)
+			if tc.wantEmpty {
+				assert.Empty(t, got, "expected empty instruction for lang=%q", tc.lang)
+			} else {
+				assert.NotEmpty(t, got, "expected non-empty instruction for lang=%q", tc.lang)
+				assert.Contains(t, got, tc.wantContain)
+			}
+		})
+	}
+}
+
+func TestStoryToOutlinePrompt_HasLangInstruction_EnUS(t *testing.T) {
+	t.Parallel()
+
+	instruction := pipeline.LangInstruction("en-US")
+	assert.True(t, len(instruction) > 0, "en-US must produce a non-empty lang instruction")
+	assert.Contains(t, instruction, "English")
+	// Verify the instruction would be prepended to the outline prompt
+	combined := instruction + pipeline.PromptStoryToOutline
+	assert.True(t, len(combined) > len(pipeline.PromptStoryToOutline), "combined prompt must be longer than base prompt")
+}
+
+func TestOutlineToStoryboardPrompt_HasLangInstruction_EnUS(t *testing.T) {
+	t.Parallel()
+
+	instruction := pipeline.LangInstruction("en-US")
+	combined := instruction + pipeline.PromptOutlineToStoryboard
+	assert.Contains(t, combined, "English")
+	assert.Contains(t, combined, "storyboard director", "base prompt content must still be present")
+}
+
+func TestLangInstruction_ZhTW_Empty(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, pipeline.LangInstruction("zh-TW"))
+	assert.Empty(t, pipeline.LangInstruction("cmn-CN"))
+	assert.Empty(t, pipeline.LangInstruction(""))
+}
+
 func TestBuildPrompt_ContainsDirectiveSchema(t *testing.T) {
 	t.Parallel()
 

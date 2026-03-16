@@ -243,7 +243,8 @@ func (o *Orchestrator) resolveToStoryboard(ctx context.Context, input []byte) (d
 
 func (o *Orchestrator) transformStory(ctx context.Context, story []byte) (domain.Storyboard, error) {
 	// Story -> Outline
-	outlineJSON, err := o.deps.LLM.GenerateTransformation(ctx, PromptStoryToOutline, story)
+	outlinePrompt := langInstruction(o.deps.Language) + PromptStoryToOutline
+	outlineJSON, err := o.deps.LLM.GenerateTransformation(ctx, outlinePrompt, story)
 	if err != nil {
 		return domain.Storyboard{}, fmt.Errorf("story-to-outline failed: %w", err)
 	}
@@ -258,7 +259,8 @@ func (o *Orchestrator) transformStory(ctx context.Context, story []byte) (domain
 }
 
 func (o *Orchestrator) transformOutline(ctx context.Context, outline []byte) (domain.Storyboard, error) {
-	storyboardJSON, err := o.deps.LLM.GenerateTransformation(ctx, PromptOutlineToStoryboard, outline)
+	storyboardPrompt := langInstruction(o.deps.Language) + PromptOutlineToStoryboard
+	storyboardJSON, err := o.deps.LLM.GenerateTransformation(ctx, storyboardPrompt, outline)
 	if err != nil {
 		return domain.Storyboard{}, fmt.Errorf("outline-to-storyboard failed: %w", err)
 	}

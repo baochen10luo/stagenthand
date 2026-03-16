@@ -121,6 +121,28 @@ var languageInstructions = map[string]string{
 	"ko-KR":  "IMPORTANT: All 'dialogue' and 'text' fields MUST be written in Korean (한국어). Use natural conversational Korean.",
 }
 
+// LangInstruction is the exported version of langInstruction for use in tests.
+func LangInstruction(lang string) string {
+	return langInstruction(lang)
+}
+
+// langInstruction returns a language-enforcement prefix for LLM system prompts.
+// For Chinese languages it returns an empty string (LLM defaults to Chinese already).
+// For all other BCP-47 tags a strong directive is prepended so the LLM cannot
+// silently fall back to Chinese output.
+func langInstruction(lang string) string {
+	switch {
+	case strings.HasPrefix(lang, "en"):
+		return "IMPORTANT: You MUST write ALL dialogue, narration, and text content in English only. Do not use any other language.\n\n"
+	case strings.HasPrefix(lang, "ja"):
+		return "IMPORTANT: You MUST write ALL dialogue, narration, and text content in Japanese only. Do not use any other language.\n\n"
+	case strings.HasPrefix(lang, "ko"):
+		return "IMPORTANT: You MUST write ALL dialogue, narration, and text content in Korean only. Do not use any other language.\n\n"
+	default:
+		return ""
+	}
+}
+
 // BuildStoryboardToPanelsPrompt returns the PromptStoryboardToPanels with optional language instruction appended.
 // Exported for testing. Internal callers use buildStoryboardToPanelsPrompt.
 func BuildStoryboardToPanelsPrompt(language string, sb domain.Storyboard) string {
