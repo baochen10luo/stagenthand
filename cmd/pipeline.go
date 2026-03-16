@@ -183,24 +183,34 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	var finalVideoPath string
 	var retryStrategy string
 
-	if pipelineMaxRetries > 0 {
-		executor := remotion.NewCLIExecutor(dryRun)
+	executor := remotion.NewCLIExecutor(dryRun)
 
-		rawTemplatePath := ""
-		if cfg != nil && cfg.Remotion.TemplatePath != "" {
-			rawTemplatePath = cfg.Remotion.TemplatePath
+	rawTemplatePath := ""
+	if cfg != nil && cfg.Remotion.TemplatePath != "" {
+		rawTemplatePath = cfg.Remotion.TemplatePath
+	} else {
+		rawTemplatePath = "./remotion-template"
+	}
+	templatePath, _ := filepath.Abs(rawTemplatePath)
+
+	composition := "ShortDrama"
+	if cfg != nil && cfg.Remotion.Composition != "" {
+		composition = cfg.Remotion.Composition
+	}
+
+	propsPath := filepath.Join(pipelineOutputDir, "remotion_props.json")
+
+	// Default render (always runs when max-retries == 0)
+	if pipelineMaxRetries == 0 {
+		outputPath := filepath.Join(pipelineOutputDir, "output_v1.mp4")
+		if renderErr := executor.Render(cmd.Context(), templatePath, composition, propsPath, outputPath); renderErr != nil {
+			fmt.Fprintf(os.Stderr, "[Warning] render failed: %v\n", renderErr)
 		} else {
-			rawTemplatePath = "./remotion-template"
+			finalVideoPath = outputPath
 		}
-		templatePath, _ := filepath.Abs(rawTemplatePath)
+	}
 
-		composition := "ShortDrama"
-		if cfg != nil && cfg.Remotion.Composition != "" {
-			composition = cfg.Remotion.Composition
-		}
-
-		propsPath := filepath.Join(pipelineOutputDir, "remotion_props.json")
-
+	if pipelineMaxRetries > 0 {
 		for attempt := 0; attempt <= pipelineMaxRetries; attempt++ {
 			outputPath := filepath.Join(pipelineOutputDir, fmt.Sprintf("output_v%d.mp4", attempt+1))
 
