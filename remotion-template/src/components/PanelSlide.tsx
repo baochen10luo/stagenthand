@@ -185,15 +185,6 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
     subtitleOpacity = 1;
   }
 
-  // ─── Subtitle position mapping ───
-  const subtitleJustify =
-    dir.subtitle_position === "top"
-      ? "flex-start"
-      : dir.subtitle_position === "center"
-        ? "center"
-        : "flex-end";
-  const subtitlePaddingTop = dir.subtitle_position === "top" ? "32px" : "0";
-
   // ─── Color filter ───
   const filterCSS = COLOR_FILTERS[colorFilter ?? "none"] ?? "none";
 
@@ -234,46 +225,34 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
 
       {/* Subtitle bar */}
       {(panel.dialogue || (panel.dialogue_lines?.length ?? 0) > 0) && subtitleText && (
-        <AbsoluteFill
+        <div
           style={{
-            justifyContent: subtitleJustify,
-            alignItems: "stretch",
+            position: "absolute",
+            bottom: "8%",
+            left: "50%",
+            transform: "translateX(-50%)",
             opacity: subtitleOpacity,
+            color: "#FFFFFF",
+            fontSize: dir.subtitle_font_size !== D.subtitle_font_size
+              ? dir.subtitle_font_size
+              : 34,
+            fontWeight: 600,
+            fontFamily:
+              '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif',
+            textAlign: "center",
+            maxWidth: "80%",
+            backgroundColor: "rgba(0, 0, 0, 0.45)",
+            padding: "8px 20px",
+            borderRadius: 4,
+            textShadow:
+              "2px 2px 4px rgba(0,0,0,0.9), -1px -1px 3px rgba(0,0,0,0.9)",
+            lineHeight: 1.4,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
           }}
         >
-          <div
-            style={{
-              background:
-                dir.subtitle_position === "bottom"
-                  ? "linear-gradient(transparent, rgba(0,0,0,0.85))"
-                  : dir.subtitle_position === "top"
-                    ? "linear-gradient(rgba(0,0,0,0.85), transparent)"
-                    : "rgba(0,0,0,0.6)",
-              padding: `40px 48px 32px`,
-              paddingTop: subtitlePaddingTop,
-              display: "flex",
-              justifyContent: "center",
-            }}
-          >
-            <span
-              style={{
-                color: "#fff",
-                fontSize: dir.subtitle_font_size !== D.subtitle_font_size
-                  ? dir.subtitle_font_size
-                  : (isPortrait ? 32 : 40),
-                fontWeight: 600,
-                fontFamily:
-                  '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif',
-                textAlign: "center",
-                textShadow: "0 2px 8px rgba(0,0,0,0.9)",
-                lineHeight: 1.5,
-                maxWidth: isPortrait ? "92%" : "80%",
-              }}
-            >
-              {subtitleText}
-            </span>
-          </div>
-        </AbsoluteFill>
+          {subtitleText}
+        </div>
       )}
 
       {/* TTS Audio */}
