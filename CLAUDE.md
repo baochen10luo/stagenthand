@@ -105,6 +105,12 @@ Tests are written before implementation. Every interface has a `mock.go` in its 
 
 ## Current Phase
 
-**Phase 8 complete. Phase 9 is next:** multi-language TTS (`--language`), character registry (`internal/character/`), AI Critic auto-retry (`--max-retries`), batch multi-episode (`--episodes N`).
+**Phase 10.1 complete.** All phases through 10.1 are shipped:
+- Phase 9: multi-language TTS, character registry, AI Critic auto-retry, batch multi-episode
+- Phase 10a: multi-speaker TTS with per-character voice routing
+- Phase 10b: vertical video 9:16 format
+- Phase 10c: series continuity with sliding window memory
+- Phase 10.0: structured `DialogueLine`
+- Phase 10.1: direct subtitle patching + LLM translation
 
 See `DEVELOPMENT_PLAN.md` for full spec and `AGENTS.md` for anti-patterns and naming conventions.

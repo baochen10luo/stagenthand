@@ -93,6 +93,44 @@ func TestCompressForCritic_FileNotFound(t *testing.T) {
 	}
 }
 
+// TestMockClient verifies that MockClient captures arguments and returns configured values.
+func TestMockClient(t *testing.T) {
+	m := &MockClient{MockVideoBytes: []byte("video"), MockErr: nil}
+	b, err := m.GenerateVideo(context.Background(), "http://img", "a prompt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(b) != "video" {
+		t.Errorf("expected %q, got %q", "video", string(b))
+	}
+	if m.CapturedURL != "http://img" {
+		t.Errorf("CapturedURL = %q, want %q", m.CapturedURL, "http://img")
+	}
+	if m.CapturedPrompt != "a prompt" {
+		t.Errorf("CapturedPrompt = %q, want %q", m.CapturedPrompt, "a prompt")
+	}
+}
+
+// TestCompressForCritic_LargeFileNoFFmpeg verifies that a file over 20MB with no ffmpeg returns an error.
+func TestCompressForCritic_LargeFileNoFFmpeg(t *testing.T) {
+	dir := t.TempDir()
+	largeFile := filepath.Join(dir, "large.mp4")
+
+	// 21MB — exceeds the 20MB threshold
+	data := make([]byte, 21*1024*1024)
+	if err := os.WriteFile(largeFile, data, 0644); err != nil {
+		t.Fatalf("failed to create large test file: %v", err)
+	}
+
+	// Hide ffmpeg from PATH so LookPath fails
+	t.Setenv("PATH", "")
+
+	_, _, err := compressForCritic(largeFile)
+	if err == nil {
+		t.Error("expected error when ffmpeg is not in PATH, got nil")
+	}
+}
+
 // TestEvaluate_AutoCompressOnLargeInput tests the integration of compressForCritic within Evaluate.
 // It uses table-driven cases: small file passes through, non-existent file returns error.
 func TestEvaluate_AutoCompressOnLargeInput(t *testing.T) {
