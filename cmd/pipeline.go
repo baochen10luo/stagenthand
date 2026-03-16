@@ -154,7 +154,9 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 			batchCfg.SeriesRepo = series.NewFileRepository(memoryPath)
 			batchCfg.Summarizer = series.NewLLMSummarizer(llmClient)
 			batchCfg.WindowSize = pipelineSeriesWindow
-			batchCfg.CheckpointGate = ckptGate
+			if !pipelineSkipHITL {
+				batchCfg.CheckpointGate = ckptGate
+			}
 		}
 
 		batchResult, err := pipeline.RunBatch(context.Background(), orch, inputData, batchCfg)
