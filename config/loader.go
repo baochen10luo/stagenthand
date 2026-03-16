@@ -56,8 +56,11 @@ type AudioConfig struct {
 // VideoConfig holds video-generation provider settings.
 type VideoConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
-	Provider string `mapstructure:"provider"`
+	Provider string `mapstructure:"provider"` // "remotion" | "nova_reel"
 	APIKey   string `mapstructure:"api_key"`
+	// Nova Reel specific
+	S3Bucket string `mapstructure:"s3_bucket"`
+	Region   string `mapstructure:"region"`
 }
 
 // RemotionConfig holds Remotion render settings.

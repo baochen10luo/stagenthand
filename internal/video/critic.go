@@ -75,12 +75,22 @@ func (e *Evaluation) CheckApproval() bool {
 // Critic evaluates a generated video MP4 against the original JSON configuration
 // using an advanced multi-modal foundation model.
 type Critic struct {
-	client llm.VideoCriticClient
+	client       llm.VideoCriticClient
+	systemPrompt string // if empty, uses the default Stage 1 prompt
 }
 
 // NewCritic creates a new AI Critic with the given multi-modal LLM client.
 func NewCritic(client llm.VideoCriticClient) *Critic {
 	return &Critic{client: client}
+}
+
+// NewMotionCritic creates a Critic with a motion-focused system prompt
+// designed for evaluating Nova Reel I2V dynamic video output (Stage 2).
+func NewMotionCritic(client llm.VideoCriticClient) *Critic {
+	return &Critic{
+		client:       client,
+		systemPrompt: motionCriticPrompt,
+	}
 }
 
 // Evaluate uses the configured multi-modal model to watch the video, read the directives,
@@ -99,7 +109,25 @@ func (c *Critic) Evaluate(ctx context.Context, videoPath string, propsJSONData [
 		return nil, fmt.Errorf("could not read video file for critique: %w", err)
 	}
 
-	systemPrompt := `You are an elite, uncompromising AI Film Critic and Technical Director evaluating an AI-generated video. You demand absolute perfection in continuity and storytelling.
+	systemPrompt := c.systemPrompt
+	if systemPrompt == "" {
+		systemPrompt = defaultCriticPrompt
+	}
+
+	respBytes, err := c.client.ReviewVideo(ctx, systemPrompt, propsJSONData, "mp4", videoBytes)
+	if err != nil {
+		return nil, fmt.Errorf("video analysis by LLM failed: %w", err)
+	}
+
+	var eval Evaluation
+	if err := json.Unmarshal(respBytes, &eval); err != nil {
+		return nil, fmt.Errorf("failed to parse critic evaluation json: %w (raw response: %s)", err, string(respBytes))
+	}
+
+	return &eval, nil
+}
+
+const defaultCriticPrompt = `You are an elite, uncompromising AI Film Critic and Technical Director evaluating an AI-generated video. You demand absolute perfection in continuity and storytelling.
 You will be provided with:
 1. The rendered MP4 video.
 2. The original 'RemotionProps' JSON that generated the video.
@@ -128,15 +156,30 @@ Respond ONLY with valid JSON matching EXACTLY this structure, with no markdown f
   "feedback": "..."
 }`
 
-	respBytes, err := c.client.ReviewVideo(ctx, systemPrompt, propsJSONData, "mp4", videoBytes)
-	if err != nil {
-		return nil, fmt.Errorf("video analysis by LLM failed: %w", err)
-	}
+const motionCriticPrompt = `You are an elite AI Motion Director evaluating a Nova Reel I2V (Image-to-Video) generated dynamic video.
+You will be provided with:
+1. The rendered MP4 video (a concatenation of 6-second dynamic shots generated from static panel images).
+2. The original 'RemotionProps' JSON describing the intended story panels.
 
-	var eval Evaluation
-	if err := json.Unmarshal(respBytes, &eval); err != nil {
-		return nil, fmt.Errorf("failed to parse critic evaluation json: %w (raw response: %s)", err, string(respBytes))
-	}
+Your job is to strictly evaluate the DYNAMIC VIDEO across 4 dimensions, scoring each out of 10. Focus on MOTION QUALITY, not static composition.
 
-	return &eval, nil
-}
+1. 'visual_score': CHARACTER CROSS-FRAME CONSISTENCY. Watch each shot carefully — does the same character maintain stable appearance (face, clothing, posture) throughout the 6-second motion? If a character morphs, distorts, or flickers between frames, score < 6. Also check for motion artifacts: warping, ghosting, sudden jumps, or unnatural deformations.
+
+2. 'audio_sync_score': SHOT TRANSITION SMOOTHNESS. Evaluate how smoothly consecutive shots connect. Are there jarring cuts, color shifts, or scale jumps between shots? If the transition between two shots feels like a hard teleport rather than a natural scene change, score < 6.
+
+3. 'adherence_score': MOTION DIRECTIVE COMPLIANCE. Check if the panel directives (MotionEffect like ken_burns_in, slow_zoom_out, pan_left) are faithfully represented in the actual camera motion of each shot. If a directive says "ken_burns_in" but the camera is static or moves laterally, score < 5. If no directives are specified, evaluate whether the default motion feels cinematic and purposeful.
+
+4. 'tone_score': OVERALL DYNAMIC FLUIDITY. Does the video feel alive and cinematic as a whole? Are the motions smooth and natural (like a real camera operator), or do they feel robotic and artificial? Does the pacing of motion match the narrative mood? A tense scene should have deliberate, controlled motion; a joyful scene can have more dynamic movement.
+
+If 'visual_score' or 'audio_sync_score' are below 8, or the total score is below 32, you MUST provide 'action': 'REJECT'. Otherwise, 'APPROVE'.
+In 'feedback', describe specific motion issues per shot index (e.g., "Shot 3: character face distorts at frame ~72").
+
+Respond ONLY with valid JSON matching EXACTLY this structure, with no markdown formatting around it:
+{
+  "visual_score": 10,
+  "audio_sync_score": 10,
+  "adherence_score": 10,
+  "tone_score": 10,
+  "action": "APPROVE",
+  "feedback": "..."
+}`

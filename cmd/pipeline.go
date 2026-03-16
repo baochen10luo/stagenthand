@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/baochen10luo/stagenthand/config"
 	"github.com/baochen10luo/stagenthand/internal/audio"
 	"github.com/baochen10luo/stagenthand/internal/character"
 	"github.com/baochen10luo/stagenthand/internal/domain"
@@ -23,16 +24,17 @@ import (
 )
 
 var (
-	pipelineSkipHITL     bool
-	pipelineOutputDir    string
-	pipelineLanguage     string
-	pipelineMaxRetries   int
-	pipelineEpisodes     int
-	pipelineBatchConc    int
-	pipelineFormat       string // "landscape" or "portrait"
-	pipelineMultiSpeaker bool
-	pipelineSeriesMemory bool
-	pipelineSeriesWindow int
+	pipelineSkipHITL      bool
+	pipelineOutputDir     string
+	pipelineLanguage      string
+	pipelineMaxRetries    int
+	pipelineEpisodes      int
+	pipelineBatchConc     int
+	pipelineFormat        string // "landscape" or "portrait"
+	pipelineMultiSpeaker  bool
+	pipelineSeriesMemory  bool
+	pipelineSeriesWindow  int
+	pipelineVideoBackend  string // "remotion" (default) or "nova_reel"
 )
 
 var pipelineCmd = &cobra.Command{
@@ -302,6 +304,26 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Stage 2: Nova Reel (only when Critic 1 approved and video backend is nova_reel)
+	videoBackend := resolveVideoBackend()
+	var reelApprovedFlag bool
+	if criticApproved && videoBackend == "nova_reel" && !dryRun {
+		reelVideoPath, reelErr := runNovaReelStage(cmd.Context(), result.Panels, props, cfg, pipelineOutputDir)
+		if reelErr != nil {
+			// fallback: log warning, continue with Stage 1 static version
+			fmt.Fprintf(os.Stderr, "[Warning] Nova Reel stage failed, using static video: %v\n", reelErr)
+		} else {
+			// Critic 2: motion-focused
+			reelApproved, critic2Err := runReelCritic(cmd.Context(), reelVideoPath, props, cfg)
+			if critic2Err != nil || !reelApproved {
+				fmt.Fprintf(os.Stderr, "[Info] Reel Critic 2 did not approve, using static video as fallback\n")
+			} else {
+				finalVideoPath = reelVideoPath
+				reelApprovedFlag = true
+			}
+		}
+	}
+
 	// HITL: final checkpoint after render (only when a video was produced)
 	if !pipelineSkipHITL && finalVideoPath != "" {
 		if err := ckptGate.CreateAndWait(cmd.Context(), "pipeline", domain.StageFinal); err != nil {
@@ -318,6 +340,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		"critic_approved": criticApproved,
 		"output_video":    finalVideoPath,
 		"retry_strategy":  retryStrategy,
+		"reel_approved":   reelApprovedFlag,
 	}
 	return json.NewEncoder(os.Stdout).Encode(summary)
 }
@@ -356,5 +379,108 @@ func init() {
 		"Enable series continuity across episodes. Requires --episodes > 1.")
 	pipelineCmd.Flags().IntVar(&pipelineSeriesWindow, "series-window", 3,
 		"Number of recent episodes to inject as context. (default: 3)")
+	pipelineCmd.Flags().StringVar(&pipelineVideoBackend, "video-backend", "",
+		"video backend: remotion (default) or nova_reel")
 	rootCmd.AddCommand(pipelineCmd)
+}
+
+// resolveVideoBackend returns the effective video backend: CLI flag > config > "remotion".
+func resolveVideoBackend() string {
+	if pipelineVideoBackend != "" {
+		return pipelineVideoBackend
+	}
+	if cfg != nil && cfg.Video.Provider != "" {
+		return cfg.Video.Provider
+	}
+	return "remotion"
+}
+
+// runNovaReelStage generates a 6-second dynamic shot for each panel via Nova Reel I2V,
+// then concatenates all shots into a single mp4.
+func runNovaReelStage(ctx context.Context, panels []domain.Panel, props domain.RemotionProps, appCfg *config.Config, outputDir string) (string, error) {
+	// Resolve AWS credentials: prefer video config, fall back to LLM config
+	accessKey := appCfg.LLM.AWSAccessKeyID
+	secretKey := appCfg.LLM.AWSSecretAccessKey
+	region := appCfg.Video.Region
+	if region == "" {
+		region = appCfg.LLM.AWSRegion
+	}
+	s3Bucket := appCfg.Video.S3Bucket
+	if s3Bucket == "" {
+		return "", fmt.Errorf("video.s3_bucket is required for nova_reel backend")
+	}
+
+	reelClient, err := video.NewNovaReelClient(accessKey, secretKey, region, s3Bucket)
+	if err != nil {
+		return "", fmt.Errorf("create nova reel client: %w", err)
+	}
+
+	shotsDir := filepath.Join(outputDir, "shots")
+	if err := os.MkdirAll(shotsDir, 0755); err != nil {
+		return "", fmt.Errorf("create shots dir: %w", err)
+	}
+
+	var shotPaths []string
+	for i, panel := range panels {
+		if panel.ImageURL == "" {
+			fmt.Fprintf(os.Stderr, "[Warning] Panel %d has no image, skipping reel shot\n", i+1)
+			continue
+		}
+
+		shotPath := filepath.Join(shotsDir, fmt.Sprintf("shot_%03d.mp4", i+1))
+
+		// Smart resume: skip if shot already exists and is non-empty
+		if info, statErr := os.Stat(shotPath); statErr == nil && info.Size() > 0 {
+			shotPaths = append(shotPaths, shotPath)
+			continue
+		}
+
+		shotBytes, genErr := reelClient.GenerateShot(ctx, panel.ImageURL, panel.Description)
+		if genErr != nil {
+			return "", fmt.Errorf("generate reel shot for panel %d: %w", i+1, genErr)
+		}
+
+		if writeErr := os.WriteFile(shotPath, shotBytes, 0644); writeErr != nil {
+			return "", fmt.Errorf("write shot %d: %w", i+1, writeErr)
+		}
+		shotPaths = append(shotPaths, shotPath)
+	}
+
+	if len(shotPaths) == 0 {
+		return "", fmt.Errorf("no shots generated for reel")
+	}
+
+	reelOutputPath := filepath.Join(outputDir, "output_reel.mp4")
+	if err := video.ConcatenateShots(ctx, shotPaths, reelOutputPath); err != nil {
+		return "", fmt.Errorf("concatenate reel shots: %w", err)
+	}
+
+	return reelOutputPath, nil
+}
+
+// runReelCritic evaluates the reel video with a motion-focused Critic 2 prompt.
+func runReelCritic(ctx context.Context, videoPath string, props domain.RemotionProps, appCfg *config.Config) (bool, error) {
+	if appCfg.LLM.AWSAccessKeyID == "" || appCfg.LLM.AWSSecretAccessKey == "" {
+		// No credentials for critic — assume approved to avoid blocking
+		return true, nil
+	}
+
+	bedrockClient, err := llm.NewBedrockClient(
+		appCfg.LLM.AWSAccessKeyID,
+		appCfg.LLM.AWSSecretAccessKey,
+		appCfg.LLM.AWSRegion,
+		appCfg.LLM.Model,
+	)
+	if err != nil {
+		return false, fmt.Errorf("create bedrock client for reel critic: %w", err)
+	}
+
+	critic := video.NewMotionCritic(bedrockClient)
+	propsJSON, _ := json.Marshal(props)
+	eval, err := critic.Evaluate(ctx, videoPath, propsJSON)
+	if err != nil {
+		return false, fmt.Errorf("reel critic evaluation: %w", err)
+	}
+
+	return eval.CheckApproval(), nil
 }
