@@ -66,6 +66,9 @@ func NewBedrockClientWithAPI(api BedrockAPI, modelID string) *BedrockClient {
 func (b *BedrockClient) GenerateTransformation(ctx context.Context, systemPrompt string, inputData []byte) ([]byte, error) {
 	input := &bedrockruntime.ConverseInput{
 		ModelId: aws.String(b.modelID),
+		InferenceConfig: &brtypes.InferenceConfiguration{
+			MaxTokens: aws.Int32(4096),
+		},
 		System: []brtypes.SystemContentBlock{
 			&brtypes.SystemContentBlockMemberText{Value: systemPrompt},
 		},
@@ -133,6 +136,9 @@ func (b *BedrockClient) ReviewVideo(ctx context.Context, systemPrompt string, in
 
 	input := &bedrockruntime.ConverseInput{
 		ModelId: aws.String(b.modelID),
+		InferenceConfig: &brtypes.InferenceConfiguration{
+			MaxTokens: aws.Int32(4096),
+		},
 		System: []brtypes.SystemContentBlock{
 			&brtypes.SystemContentBlockMemberText{Value: systemPrompt},
 		},
