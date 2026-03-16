@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
 )
@@ -52,6 +53,18 @@ func (r *CriticResult) IsApproved() bool {
 	return r.VisualScore+r.AudioSyncScore+r.AdherenceScore+r.ToneScore >= 32
 }
 
+// PropsCriticEvaluator evaluates generated panels JSON for quality issues.
+// Defined here (in the consumer package) per DIP.
+type PropsCriticEvaluator interface {
+	Evaluate(ctx context.Context, propsJSON []byte) (*PropsCriticResult, error)
+}
+
+// PropsCriticResult holds the outcome of a PropsCritic evaluation.
+type PropsCriticResult struct {
+	Issues []string `json:"issues"`
+	OK     bool     `json:"ok"`
+}
+
 // OrchestratorDeps groups external dependencies injected at construction time.
 // Dependency Inversion: orchestrator only knows interfaces, never concrete types.
 type OrchestratorDeps struct {
@@ -60,7 +73,8 @@ type OrchestratorDeps struct {
 	Audio       AudioBatcher
 	Music       MusicBatcher
 	Checkpoints CheckpointGate
-	Language    string // BCP-47 language tag for TTS/dialogue
+	PropsCritic PropsCriticEvaluator // optional; nil = disabled
+	Language    string               // BCP-47 language tag for TTS/dialogue
 	DryRun      bool
 	SkipHITL    bool
 }
@@ -110,6 +124,28 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 	panels, err := o.transformStoryboardToPanels(ctx, storyboard)
 	if err != nil {
 		return nil, fmt.Errorf("panels stage failed: %w", err)
+	}
+
+	// 3.5 PropsCritic: validate panels, retry once if issues found
+	if o.deps.PropsCritic != nil {
+		panelsJSON, _ := jsonMarshal(struct {
+			Panels []domain.Panel `json:"panels"`
+		}{Panels: panels})
+
+		eval, evalErr := o.deps.PropsCritic.Evaluate(ctx, panelsJSON)
+		if evalErr != nil {
+			slog.Warn("PropsCritic evaluation failed, continuing with current panels", "error", evalErr)
+		} else if !eval.OK {
+			for _, issue := range eval.Issues {
+				slog.Warn("PropsCritic issue", "issue", issue)
+			}
+			// Retry once: re-generate panels from the same storyboard
+			retryPanels, retryErr := o.transformStoryboardToPanels(ctx, storyboard)
+			if retryErr != nil {
+				return nil, fmt.Errorf("panels retry after PropsCritic failed: %w", retryErr)
+			}
+			panels = retryPanels
+		}
 	}
 
 	return o.executeFromPanels(ctx, storyboard.ProjectID, panels, storyboard.BGMURL, storyboard.Directives)
