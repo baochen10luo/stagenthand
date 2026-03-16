@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
 )
@@ -165,6 +166,11 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	// Apply dynamic duration: ensure each panel is long enough for its dialogue
 	// plus an inversely-proportional breathing buffer for the viewer.
 	panels = applyDynamicDuration(panels)
+
+	// Apply subtitle timings: compute start_sec/end_sec for each DialogueLine
+	// using character-proportional distribution (Strategy C) or full-panel
+	// display for single-line panels (Strategy D).
+	panels = applySubtitleTimings(panels)
 
 
 	// 3. Generate images for panels
@@ -334,4 +340,69 @@ func applyDynamicDuration(panels []domain.Panel) []domain.Panel {
 		}
 	}
 	return panels
+}
+
+// applySubtitleTimings sets StartSec/EndSec on every DialogueLine in every panel.
+// It delegates per-panel computation to calcSubtitleTimings.
+func applySubtitleTimings(panels []domain.Panel) []domain.Panel {
+	for i := range panels {
+		if len(panels[i].DialogueLines) == 0 {
+			continue
+		}
+		panels[i].DialogueLines = calcSubtitleTimings(panels[i].DialogueLines, panels[i].DurationSec)
+	}
+	return panels
+}
+
+// calcSubtitleTimings computes per-line subtitle timing for a single panel.
+//
+// Strategy D — single line (or empty): the entire panel duration is assigned
+// to the one line; no time splitting is performed.
+//
+// Strategy C — multiple lines: each line's share of the total duration is
+// proportional to its non-whitespace rune count, so longer lines stay on
+// screen longer than short ones.
+func calcSubtitleTimings(lines []domain.DialogueLine, totalDuration float64) []domain.DialogueLine {
+	if len(lines) == 0 {
+		return lines
+	}
+	// Strategy D: single line — occupy the full panel.
+	if len(lines) == 1 {
+		lines[0].StartSec = 0
+		lines[0].EndSec = totalDuration
+		return lines
+	}
+	// Strategy C: proportional distribution by non-whitespace rune count.
+	counts := make([]int, len(lines))
+	total := 0
+	for i, l := range lines {
+		n := 0
+		for _, c := range l.Text {
+			if !isWhitespaceRune(c) {
+				n++
+			}
+		}
+		if n == 0 {
+			n = 1 // avoid zero-width line
+		}
+		counts[i] = n
+		total += n
+	}
+	cursor := 0.0
+	for i := range lines {
+		dur := (float64(counts[i]) / float64(total)) * totalDuration
+		lines[i].StartSec = cursor
+		cursor += dur
+		if i == len(lines)-1 {
+			lines[i].EndSec = totalDuration
+		} else {
+			lines[i].EndSec = cursor
+		}
+	}
+	return lines
+}
+
+// isWhitespaceRune reports whether r is a Unicode whitespace character.
+func isWhitespaceRune(r rune) bool {
+	return strings.TrimSpace(string(r)) == ""
 }

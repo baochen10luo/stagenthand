@@ -3,6 +3,7 @@ package remotion
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
 	"github.com/baochen10luo/stagenthand/internal/render"
@@ -49,6 +50,7 @@ func PanelsToPropsWithFormat(projectID string, panels []domain.Panel, width, hei
 		p = withDefaultDuration(p)
 		p.ImageURL = normalizePath(p.ImageURL, projectID)
 		p.AudioURL = normalizePath(p.AudioURL, projectID)
+		p = applySubtitleTimings(p)
 		normalized[i] = p
 	}
 	return domain.RemotionProps{
@@ -80,12 +82,14 @@ func normalizePath(path, projectID string) string {
 }
 
 
-// flattenPanels extracts all panels from scenes in order, applying default durations.
+// flattenPanels extracts all panels from scenes in order, applying default durations and subtitle timings.
 func flattenPanels(scenes []domain.Scene) []domain.Panel {
 	var out []domain.Panel
 	for _, scene := range scenes {
 		for _, p := range scene.Panels {
-			out = append(out, withDefaultDuration(p))
+			p = withDefaultDuration(p)
+			p = applySubtitleTimings(p)
+			out = append(out, p)
 		}
 	}
 	return out
@@ -96,5 +100,62 @@ func withDefaultDuration(p domain.Panel) domain.Panel {
 	if p.DurationSec == 0 {
 		p.DurationSec = defaultPanelDurationSec
 	}
+	return p
+}
+
+// calcSubtitleTimings assigns StartSec/EndSec to each DialogueLine using:
+//   - Strategy D (single line or empty): the one line spans the full panel duration.
+//   - Strategy C (multiple lines): each line's duration ∝ its non-whitespace character count.
+func calcSubtitleTimings(lines []domain.DialogueLine, totalDuration float64) []domain.DialogueLine {
+	if len(lines) == 0 {
+		return lines
+	}
+	result := make([]domain.DialogueLine, len(lines))
+	copy(result, lines)
+
+	if len(result) == 1 {
+		// Strategy D: single line covers the whole panel
+		result[0].StartSec = 0
+		result[0].EndSec = totalDuration
+		return result
+	}
+
+	// Strategy C: proportional to non-whitespace character count
+	counts := make([]int, len(result))
+	total := 0
+	for i, l := range result {
+		n := 0
+		for _, c := range l.Text {
+			if !unicode.IsSpace(c) {
+				n++
+			}
+		}
+		if n == 0 {
+			n = 1
+		}
+		counts[i] = n
+		total += n
+	}
+
+	cursor := 0.0
+	for i := range result {
+		dur := (float64(counts[i]) / float64(total)) * totalDuration
+		result[i].StartSec = cursor
+		cursor += dur
+		if i == len(result)-1 {
+			result[i].EndSec = totalDuration
+		} else {
+			result[i].EndSec = cursor
+		}
+	}
+	return result
+}
+
+// applySubtitleTimings calculates and assigns subtitle timings for a panel's DialogueLines.
+func applySubtitleTimings(p domain.Panel) domain.Panel {
+	if len(p.DialogueLines) == 0 {
+		return p
+	}
+	p.DialogueLines = calcSubtitleTimings(p.DialogueLines, p.DurationSec)
 	return p
 }

@@ -148,9 +148,11 @@ type Scene struct {
 
 // DialogueLine represents a single spoken line by one character.
 type DialogueLine struct {
-	Speaker string `json:"speaker"`           // character name; "" = narrator
-	Text    string `json:"text"`
-	Emotion string `json:"emotion,omitempty"` // happy | sad | angry | whisper | neutral
+	Speaker  string  `json:"speaker"`            // character name; "" = narrator
+	Text     string  `json:"text"`
+	Emotion  string  `json:"emotion,omitempty"`  // happy | sad | angry | whisper | neutral
+	StartSec float64 `json:"start_sec,omitempty"` // subtitle display start (seconds into panel)
+	EndSec   float64 `json:"end_sec,omitempty"`   // subtitle display end (seconds into panel)
 }
 
 // Panel represents a single image frame with associated metadata.

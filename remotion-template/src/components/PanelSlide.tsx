@@ -7,7 +7,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import type { Panel, PanelDirective } from "../types";
+import type { DialogueLine, Panel, PanelDirective } from "../types";
 
 type PanelSlideProps = {
   panel: Panel;
@@ -122,16 +122,43 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
     let clean = text.trim();
     // Strip common prefixes
     clean = clean.replace(/^(?:VO|V\.O\.|Narrator|Voiceover|Voice Over|\[.*?\])\s*[:\-]*\s*/i, "");
-    // Also remove any stray starting or ending quotes loosely 
+    // Also remove any stray starting or ending quotes loosely
     clean = clean.replace(/^["']+(.*?)["']+$/s, "$1");
     // Strip again in case it was "VO: 'Hello'"
     clean = clean.replace(/^(?:VO|V\.O\.|Narrator|Voiceover|Voice Over|\[.*?\])\s*[:\-]*\s*/i, "");
     return clean.trim();
   };
 
+  // ─── Multi-line subtitle with per-line timing (Strategy C + D) ───
+  // If dialogue_lines are present and have start_sec/end_sec, use them for timed display.
+  // Otherwise fall back to the legacy single dialogue string.
+  const getActiveDialogueLine = (lines: DialogueLine[] | undefined): string => {
+    if (!lines || lines.length === 0) return "";
+    const currentSec = frame / fps;
+    // Find the active line for the current time position
+    for (const line of lines) {
+      const start = line.start_sec ?? 0;
+      const end = line.end_sec ?? durationFrames / fps;
+      if (currentSec >= start && currentSec < end) {
+        return sanitizeDialogue(line.text);
+      }
+    }
+    // If past all lines, show the last line until end of panel
+    const lastLine = lines[lines.length - 1];
+    if (lastLine && frame < durationFrames) {
+      return sanitizeDialogue(lastLine.text);
+    }
+    return "";
+  };
+
+  const hasTimedLines = (panel.dialogue_lines?.length ?? 0) > 0 &&
+    (panel.dialogue_lines?.[0]?.start_sec !== undefined || panel.dialogue_lines?.[0]?.end_sec !== undefined);
+
   const subtitleDelay = Math.round(0.15 * fps);
   let subtitleOpacity = 1;
-  const cleanDialogue = sanitizeDialogue(panel.dialogue);
+  const cleanDialogue = hasTimedLines
+    ? getActiveDialogueLine(panel.dialogue_lines)
+    : sanitizeDialogue(panel.dialogue);
   let subtitleText = cleanDialogue;
 
   if (dir.subtitle_effect === "fade") {
@@ -144,9 +171,9 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
   } else if (dir.subtitle_effect === "typewriter" && cleanDialogue) {
     subtitleOpacity = 1;
     const totalChars = cleanDialogue.length;
-    // Linus architectural fix: decouple speed from duration. 
+    // Linus architectural fix: decouple speed from duration.
     // Assume roughly 100ms (0.1s) per character to match natural reading/speaking speed.
-    const typewriterFrames = Math.round(totalChars * (0.1 * fps)); 
+    const typewriterFrames = Math.round(totalChars * (0.1 * fps));
     const charsVisible = Math.round(
       interpolate(frame, [subtitleDelay, subtitleDelay + typewriterFrames], [0, totalChars], {
         extrapolateRight: "clamp",
@@ -206,7 +233,7 @@ export const PanelSlide: React.FC<PanelSlideProps> = ({ panel, colorFilter }) =>
       )}
 
       {/* Subtitle bar */}
-      {panel.dialogue && (
+      {(panel.dialogue || (panel.dialogue_lines?.length ?? 0) > 0) && subtitleText && (
         <AbsoluteFill
           style={{
             justifyContent: subtitleJustify,

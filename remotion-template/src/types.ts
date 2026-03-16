@@ -2,6 +2,14 @@
 // This is the contract between shand CLI and the Remotion template.
 // Changes here must be reflected in internal/domain/types.go
 
+export type DialogueLine = {
+  speaker: string;   // character name; "" = narrator
+  text: string;
+  emotion?: string;  // happy | sad | angry | whisper | neutral
+  start_sec?: number; // subtitle display start (seconds into panel)
+  end_sec?: number;   // subtitle display end (seconds into panel)
+};
+
 export type PanelDirective = {
   motion_effect?: "ken_burns_in" | "ken_burns_out" | "pan_left" | "pan_right" | "static";
   motion_intensity?: number; // 0.0–0.2, default 0.05
@@ -23,6 +31,7 @@ export type Panel = {
   audio_url?: string;
   duration_sec: number;
   directive?: PanelDirective;
+  dialogue_lines?: DialogueLine[]; // structured per-speaker lines with timing
 };
 
 export type Directives = {
