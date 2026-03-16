@@ -38,11 +38,12 @@ func RunTransformationStage(ctx context.Context, transformer Transformer, system
 
 // languageInstructions maps BCP-47 language tags to dialogue instructions appended to PromptStoryboardToPanels.
 var languageInstructions = map[string]string{
-	"en-US": "IMPORTANT: All 'dialogue' fields MUST be written in English. Use natural American English.",
-	"en-GB": "IMPORTANT: All 'dialogue' fields MUST be written in English. Use natural British English.",
-	"ja-JP": "IMPORTANT: All 'dialogue' fields MUST be written in Japanese (日本語). Use natural conversational Japanese.",
-	"ko-KR": "IMPORTANT: All 'dialogue' fields MUST be written in Korean (한국어). Use natural conversational Korean.",
-	"cmn-CN": "IMPORTANT: All 'dialogue' fields MUST be written in Simplified Chinese (简体中文).",
+	"zh-TW":  "IMPORTANT: All 'dialogue' and 'text' fields MUST be written in Traditional Chinese (繁體中文). Use natural conversational Taiwanese Mandarin.",
+	"cmn-CN": "IMPORTANT: All 'dialogue' and 'text' fields MUST be written in Simplified Chinese (简体中文). Use natural conversational Mandarin.",
+	"en-US":  "IMPORTANT: All 'dialogue' and 'text' fields MUST be written in English. Use natural American English.",
+	"en-GB":  "IMPORTANT: All 'dialogue' and 'text' fields MUST be written in English. Use natural British English.",
+	"ja-JP":  "IMPORTANT: All 'dialogue' and 'text' fields MUST be written in Japanese (日本語). Use natural conversational Japanese.",
+	"ko-KR":  "IMPORTANT: All 'dialogue' and 'text' fields MUST be written in Korean (한국어). Use natural conversational Korean.",
 }
 
 // BuildStoryboardToPanelsPrompt returns the PromptStoryboardToPanels with optional language instruction appended.
@@ -61,8 +62,8 @@ func buildStoryboardToPanelsPrompt(language string, sb domain.Storyboard) string
 		lang = sb.Directives.Language
 	}
 
-	if lang == "" || lang == "zh-TW" {
-		return base
+	if lang == "" {
+		lang = "zh-TW" // default to Traditional Chinese
 	}
 
 	if instruction, ok := languageInstructions[lang]; ok {

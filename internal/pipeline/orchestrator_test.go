@@ -3,6 +3,7 @@ package pipeline_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
@@ -67,7 +68,7 @@ func TestOrchestrator_RunStagesInOrder(t *testing.T) {
 				if systemPrompt == pipeline.PromptOutlineToStoryboard {
 					return storyboardJSON, nil
 				}
-				if systemPrompt == pipeline.PromptStoryboardToPanels {
+				if strings.HasPrefix(systemPrompt, pipeline.PromptStoryboardToPanels) {
 					return panelsJSON, nil
 				}
 				return nil, errors.New("unexpected prompt")
