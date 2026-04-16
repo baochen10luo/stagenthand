@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
@@ -195,6 +197,9 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 		if err != nil {
 			return nil, fmt.Errorf("audio stage failed: %w", err)
 		}
+		// Correct DurationSec to match real audio length, then re-compute subtitle timings.
+		panels = applyRealAudioDuration(panels)
+		panels = applySubtitleTimings(panels)
 	}
 
 	// 5. Generate BGM
@@ -342,6 +347,47 @@ func applyDynamicDuration(panels []domain.Panel) []domain.Panel {
 		}
 	}
 	return panels
+}
+
+// applyRealAudioDuration reads actual audio file durations via ffprobe and updates
+// DurationSec so the panel is never shorter than the spoken audio.
+// A 0.5 s tail buffer is added after the last spoken word.
+// Panels without an AudioURL are left untouched.
+// If ffprobe is unavailable the panel duration is left unchanged.
+func applyRealAudioDuration(panels []domain.Panel) []domain.Panel {
+	const tailBuffer = 0.5
+	for i, p := range panels {
+		if p.AudioURL == "" {
+			continue
+		}
+		dur, err := mp3Duration(p.AudioURL)
+		if err != nil {
+			slog.Warn("applyRealAudioDuration: could not read audio duration", "path", p.AudioURL, "error", err)
+			continue
+		}
+		required := dur + tailBuffer
+		if panels[i].DurationSec < required {
+			slog.Info("applyRealAudioDuration: extending panel duration",
+				"scene", p.SceneNumber, "panel", p.PanelNumber,
+				"old", panels[i].DurationSec, "new", required)
+			panels[i].DurationSec = required
+		}
+	}
+	return panels
+}
+
+// mp3Duration returns the duration of an audio file in seconds using ffprobe.
+func mp3Duration(path string) (float64, error) {
+	out, err := exec.Command("ffprobe",
+		"-v", "quiet",
+		"-show_entries", "format=duration",
+		"-of", "csv=p=0",
+		path,
+	).Output()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe: %w", err)
+	}
+	return strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 }
 
 // applySubtitleTimings sets StartSec/EndSec on every DialogueLine in every panel.

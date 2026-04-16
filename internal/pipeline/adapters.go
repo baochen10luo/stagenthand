@@ -81,6 +81,79 @@ func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []d
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PrebuiltImageBatcher maps pre-existing image files to panels in order.
+// When --image-dir is set, shand skips image generation entirely.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PrebuiltImageBatcher implements ImageBatcher using images already on disk.
+// Files in imageDir are sorted and assigned to panels in order (panel 0 → file[0], etc.).
+// Images are copied into rootDir/targetDir so normalizePath() can convert them to /shand/ virtual paths.
+type PrebuiltImageBatcher struct {
+	imageDir string
+	rootDir  string // shandHome (~/.shand)
+}
+
+// NewPrebuiltImageBatcher returns an ImageBatcher that assigns sorted files from imageDir to panels.
+func NewPrebuiltImageBatcher(imageDir, rootDir string) ImageBatcher {
+	return &PrebuiltImageBatcher{imageDir: imageDir, rootDir: rootDir}
+}
+
+func (b *PrebuiltImageBatcher) BatchGenerateImages(_ context.Context, panels []domain.Panel, targetDir string) ([]domain.Panel, error) {
+	entries, err := os.ReadDir(b.imageDir)
+	if err != nil {
+		return nil, fmt.Errorf("prebuilt image dir %q: %w", b.imageDir, err)
+	}
+
+	// Collect image files (png, jpg, jpeg) sorted by name
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(e.Name())
+		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" {
+			files = append(files, filepath.Join(b.imageDir, e.Name()))
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("prebuilt image dir %q: no image files found", b.imageDir)
+	}
+
+	// Copy images to targetDir so remotion normalizePath works
+	destDir := filepath.Join(b.rootDir, targetDir)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return nil, fmt.Errorf("create image dest dir: %w", err)
+	}
+
+	result := make([]domain.Panel, len(panels))
+	for i, p := range panels {
+		srcIdx := i
+		if srcIdx >= len(files) {
+			srcIdx = srcIdx % len(files)
+		}
+		src := files[srcIdx]
+		ext := filepath.Ext(src)
+		destName := fmt.Sprintf("scene_%d_panel_%d%s", p.SceneNumber, p.PanelNumber, ext)
+		dest := filepath.Join(destDir, destName)
+
+		// Copy only if not already present
+		if info, statErr := os.Stat(dest); statErr != nil || info.Size() == 0 {
+			srcBytes, readErr := os.ReadFile(src)
+			if readErr != nil {
+				return nil, fmt.Errorf("read prebuilt image %s: %w", src, readErr)
+			}
+			if writeErr := os.WriteFile(dest, srcBytes, 0644); writeErr != nil {
+				return nil, fmt.Errorf("write image %s: %w", dest, writeErr)
+			}
+		}
+
+		p.ImageURL = dest
+		result[i] = p
+	}
+	return result, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AudioClientBatcher adapts an audio.Client into an AudioBatcher interface.
 // ─────────────────────────────────────────────────────────────────────────────
 

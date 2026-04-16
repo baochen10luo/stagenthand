@@ -12,13 +12,20 @@ export type DialogueLine = {
 
 export type PanelDirective = {
   motion_effect?: "ken_burns_in" | "ken_burns_out" | "pan_left" | "pan_right" | "static";
-  motion_intensity?: number; // 0.0–0.2, default 0.05
+  motion_intensity?: number;
   transition_in?: "fade" | "cut" | "dissolve" | "wipe_left";
   transition_out?: "fade" | "cut" | "dissolve" | "wipe_left";
-  transition_duration_ms?: number; // default 300
+  transition_duration_ms?: number;
   subtitle_effect?: "fade" | "typewriter" | "none";
-  subtitle_font_size?: number; // default 36
+  subtitle_font_size?: number;
   subtitle_position?: "bottom" | "top" | "center";
+  // Extended visual design fields
+  bg_style?: "card" | "fullbleed" | "title";
+  text_x?: "left" | "center" | "right";
+  text_y?: "top" | "middle" | "bottom";
+  text_rotate?: number;
+  show_particles?: boolean;
+  show_light_leak?: boolean;
 };
 
 export type Panel = {

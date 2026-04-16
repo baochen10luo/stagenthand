@@ -28,14 +28,31 @@ func NewClientWithFormat(provider string, dryRun bool, cfg *config.Config, forma
 		// but for now NewNanoBananaClient uses a valid proxy default.
 		return NewNanoBananaClient("", cfg.Image.APIKey, "nano-banana-2", width, height), nil
 	case "bedrock":
+		model := cfg.Image.Model
+		if model == "" {
+			model = "amazon.nova-canvas-v1:0"
+		}
 		return NewNovaCanvasClient(
 			cfg.LLM.AWSAccessKeyID,
 			cfg.LLM.AWSSecretAccessKey,
 			cfg.LLM.AWSRegion,
-			"amazon.nova-canvas-v1:0",
+			model,
 			width,
 			height,
 			"",
+		)
+	case "stability":
+		model := cfg.Image.Model
+		if model == "" {
+			model = "stability.sd3-ultra-v1:1"
+		}
+		return NewStabilityClient(
+			cfg.LLM.AWSAccessKeyID,
+			cfg.LLM.AWSSecretAccessKey,
+			cfg.LLM.AWSRegion,
+			model,
+			width,
+			height,
 		)
 	default:
 		return nil, fmt.Errorf("provider %s not implemented yet. Use --dry-run for testing", provider)

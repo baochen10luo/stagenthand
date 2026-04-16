@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/baochen10luo/stagenthand/config"
@@ -34,7 +35,8 @@ var (
 	pipelineMultiSpeaker  bool
 	pipelineSeriesMemory  bool
 	pipelineSeriesWindow  int
-	pipelineVideoBackend  string // "remotion" (default) or "nova_reel"
+	pipelineVideoBackend  string // "remotion" (default) or "nova_reel" or "grok_browser"
+	pipelineImageDir      string // pre-existing image directory; skips image generation when set
 )
 
 var pipelineCmd = &cobra.Command{
@@ -67,19 +69,25 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		return stageError("pipeline", "llm_init_error", err.Error())
 	}
 
-	// Build image client (used as BatchGenerateImages adapter)
-	imgProvider := "mock"
-	if cfg != nil && cfg.Image.Provider != "" {
-		imgProvider = cfg.Image.Provider
-	}
-	videoFormat := render.VideoFormat(pipelineFormat)
-	imgClient, err := image.NewClientWithFormat(imgProvider, dryRun, cfg, videoFormat)
-	if err != nil {
-		return stageError("pipeline", "image_init_error", err.Error())
-	}
-
 	shandHome, _ := os.UserHomeDir()
 	shandHome = filepath.Join(shandHome, ".shand")
+
+	// Build image batcher — use pre-existing images if --image-dir is set
+	videoFormat := render.VideoFormat(pipelineFormat)
+	var imgBatcher pipeline.ImageBatcher
+	if pipelineImageDir != "" {
+		imgBatcher = pipeline.NewPrebuiltImageBatcher(pipelineImageDir, shandHome)
+	} else {
+		imgProvider := "mock"
+		if cfg != nil && cfg.Image.Provider != "" {
+			imgProvider = cfg.Image.Provider
+		}
+		imgClient, err := image.NewClientWithFormat(imgProvider, dryRun, cfg, videoFormat)
+		if err != nil {
+			return stageError("pipeline", "image_init_error", err.Error())
+		}
+		imgBatcher = pipeline.NewImageClientBatcher(imgClient, shandHome)
+	}
 
 	// Build checkpoint store
 	db, err := store.New(cfg.Store.DBPath)
@@ -129,7 +137,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	// Wire orchestrator
 	deps := pipeline.OrchestratorDeps{
 		LLM:         llmClient,
-		Images:      pipeline.NewImageClientBatcherWithRegistry(imgClient, shandHome, character.NewFileRegistry(shandHome)),
+		Images:      imgBatcher,
 		Audio:       audioBatcher,
 		Music:       pipeline.NewMusicClientBatcher(musicClient, shandHome),
 		Checkpoints: ckptGate,
@@ -304,7 +312,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Stage 2: Nova Reel (only when Critic 1 approved and video backend is nova_reel)
+	// Stage 2: Dynamic video backend (nova_reel or grok_browser)
 	videoBackend := resolveVideoBackend()
 	var reelApprovedFlag bool
 	if criticApproved && videoBackend == "nova_reel" && !dryRun {
@@ -321,6 +329,14 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 				finalVideoPath = reelVideoPath
 				reelApprovedFlag = true
 			}
+		}
+	} else if videoBackend == "grok_browser" && !dryRun {
+		grokVideoPath, grokErr := runGrokBrowserStage(cmd.Context(), result.Panels, props, pipelineOutputDir)
+		if grokErr != nil {
+			fmt.Fprintf(os.Stderr, "[Warning] Grok Browser stage failed, using static video: %v\n", grokErr)
+		} else {
+			finalVideoPath = grokVideoPath
+			reelApprovedFlag = true
 		}
 	}
 
@@ -380,7 +396,9 @@ func init() {
 	pipelineCmd.Flags().IntVar(&pipelineSeriesWindow, "series-window", 3,
 		"Number of recent episodes to inject as context. (default: 3)")
 	pipelineCmd.Flags().StringVar(&pipelineVideoBackend, "video-backend", "",
-		"video backend: remotion (default) or nova_reel")
+		"video backend: remotion (default), nova_reel, or grok_browser")
+	pipelineCmd.Flags().StringVar(&pipelineImageDir, "image-dir", "",
+		"use pre-existing images from this directory (sorted by filename); skips image generation API")
 	rootCmd.AddCommand(pipelineCmd)
 }
 
@@ -456,6 +474,102 @@ func runNovaReelStage(ctx context.Context, panels []domain.Panel, props domain.R
 	}
 
 	return reelOutputPath, nil
+}
+
+// runGrokBrowserStage generates a video shot for each panel via opencli grok video (browser automation),
+// then concatenates all shots into a single mp4.
+func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domain.RemotionProps, outputDir string) (string, error) {
+	if outputDir == "" {
+		home, _ := os.UserHomeDir()
+		outputDir = filepath.Join(home, ".shand", "projects", props.ProjectID)
+	}
+
+	shotsDir := filepath.Join(outputDir, "shots")
+	if err := os.MkdirAll(shotsDir, 0755); err != nil {
+		return "", fmt.Errorf("create shots dir: %w", err)
+	}
+
+	// Resolve global style prompt from storyboard directives
+	stylePrefix := ""
+	if props.Directives != nil && props.Directives.StylePrompt != "" {
+		stylePrefix = props.Directives.StylePrompt + ", "
+	}
+
+	var shotPaths []string
+	for i, panel := range panels {
+		shotPath := filepath.Join(shotsDir, fmt.Sprintf("shot_%03d.mp4", i+1))
+
+		// Smart resume: skip if shot already exists and is non-empty
+		if info, statErr := os.Stat(shotPath); statErr == nil && info.Size() > 0 {
+			fmt.Fprintf(os.Stderr, "[Info] Grok shot %d already exists, skipping\n", i+1)
+			shotPaths = append(shotPaths, shotPath)
+			continue
+		}
+
+		prompt := stylePrefix + panel.Description
+
+		fmt.Fprintf(os.Stderr, "[Info] Generating Grok video for panel %d/%d: %s\n", i+1, len(panels), prompt)
+
+		// Call opencli grok video; output goes to ~/Downloads/grok-videos/ by default
+		// We use --output to write directly into our shots dir
+		opencliArgs := []string{
+			"grok", "video", prompt,
+			"--output", shotsDir,
+			"--timeout", "240",
+		}
+		execCmd := exec.CommandContext(ctx, "opencli", opencliArgs...)
+		execCmd.Env = append(os.Environ(), "OPENCLI_CDP_TARGET=grok.com", "OPENCLI_BROWSER_COMMAND_TIMEOUT=240")
+		out, err := execCmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("opencli grok video panel %d failed: %w\noutput: %s", i+1, err, string(out))
+		}
+
+		// opencli writes to --output dir; find the latest mp4 in shotsDir that isn't already tracked
+		entries, readErr := os.ReadDir(shotsDir)
+		if readErr != nil {
+			return "", fmt.Errorf("read shots dir: %w", readErr)
+		}
+		var latestMP4 string
+		for _, e := range entries {
+			if !e.IsDir() && filepath.Ext(e.Name()) == ".mp4" {
+				candidate := filepath.Join(shotsDir, e.Name())
+				tracked := false
+				for _, sp := range shotPaths {
+					if sp == candidate {
+						tracked = true
+						break
+					}
+				}
+				if !tracked && candidate != shotPath {
+					latestMP4 = candidate
+				}
+			}
+		}
+
+		// Rename to canonical shot name for deterministic ordering
+		if latestMP4 != "" {
+			if renameErr := os.Rename(latestMP4, shotPath); renameErr != nil {
+				return "", fmt.Errorf("rename shot %d: %w", i+1, renameErr)
+			}
+		}
+
+		if info, statErr := os.Stat(shotPath); statErr != nil || info.Size() == 0 {
+			return "", fmt.Errorf("grok video panel %d: output file missing or empty", i+1)
+		}
+
+		shotPaths = append(shotPaths, shotPath)
+	}
+
+	if len(shotPaths) == 0 {
+		return "", fmt.Errorf("no shots generated for grok_browser")
+	}
+
+	outputPath := filepath.Join(outputDir, "output_grok.mp4")
+	if err := video.ConcatenateShots(ctx, shotPaths, outputPath); err != nil {
+		return "", fmt.Errorf("concatenate grok shots: %w", err)
+	}
+
+	return outputPath, nil
 }
 
 // runReelCritic evaluates the reel video with a motion-focused Critic 2 prompt.
