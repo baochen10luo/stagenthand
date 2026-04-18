@@ -77,9 +77,10 @@ type OrchestratorDeps struct {
 	Music       MusicBatcher
 	Checkpoints CheckpointGate
 	PropsCritic PropsCriticEvaluator // optional; nil = disabled
-	Language    string               // BCP-47 language tag for TTS/dialogue
-	DryRun      bool
-	SkipHITL    bool
+	Language     string               // BCP-47 language tag for TTS/dialogue
+	TargetPanels int                  // when > 0, LLM is instructed to generate exactly this many panels
+	DryRun       bool
+	SkipHITL     bool
 }
 
 // Orchestrator coordinates the full shand pipeline:
@@ -281,7 +282,7 @@ func (o *Orchestrator) transformStoryboardToPanels(ctx context.Context, sb domai
 	input, _ := jsonMarshal(sb)
 
 	// Build language-aware prompt
-	prompt := buildStoryboardToPanelsPrompt(o.deps.Language, sb)
+	prompt := buildStoryboardToPanelsPrompt(o.deps.Language, sb, o.deps.TargetPanels)
 	panelsJSON, err := o.deps.LLM.GenerateTransformation(ctx, prompt, input)
 	if err != nil {
 		return nil, err

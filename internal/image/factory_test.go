@@ -68,4 +68,66 @@ func TestNewClientWithFormat(t *testing.T) {
 		_, ok := client.(*image.MockClient)
 		assert.True(t, ok)
 	})
+
+	t.Run("bedrock defaults to titan in us-west-2", func(t *testing.T) {
+		cfg := &config.Config{
+			LLM: config.LLMConfig{
+				AWSAccessKeyID:     "ak",
+				AWSSecretAccessKey: "sk",
+				AWSRegion:          "us-east-1",
+			},
+		}
+
+		client, err := image.NewClientWithFormat("bedrock", false, cfg, render.VideoFormatLandscape)
+		assert.NoError(t, err)
+
+		titan, ok := client.(*image.TitanImageClient)
+		assert.True(t, ok)
+		assert.Equal(t, "amazon.titan-image-generator-v2:0", titan.Model())
+		assert.Equal(t, "us-west-2", titan.Region())
+	})
+
+	t.Run("bedrock honors image model and image region overrides", func(t *testing.T) {
+		cfg := &config.Config{
+			LLM: config.LLMConfig{
+				AWSAccessKeyID:     "ak",
+				AWSSecretAccessKey: "sk",
+				AWSRegion:          "us-east-1",
+			},
+			Image: config.ImageConfig{
+				Model:  "amazon.nova-canvas-v1:0",
+				Region: "us-east-2",
+			},
+		}
+
+		client, err := image.NewClientWithFormat("bedrock", false, cfg, render.VideoFormatPortrait)
+		assert.NoError(t, err)
+
+		nova, ok := client.(*image.NovaCanvasClient)
+		assert.True(t, ok)
+		assert.Equal(t, "amazon.nova-canvas-v1:0", nova.Model())
+		assert.Equal(t, "us-east-2", nova.Region())
+	})
+
+	t.Run("stability honors image model and image region overrides", func(t *testing.T) {
+		cfg := &config.Config{
+			LLM: config.LLMConfig{
+				AWSAccessKeyID:     "ak",
+				AWSSecretAccessKey: "sk",
+				AWSRegion:          "us-east-1",
+			},
+			Image: config.ImageConfig{
+				Model:  "stability.stable-image-ultra-v1:1",
+				Region: "us-west-2",
+			},
+		}
+
+		client, err := image.NewClientWithFormat("stability", false, cfg, render.VideoFormatPortrait)
+		assert.NoError(t, err)
+
+		stability, ok := client.(*image.StabilityClient)
+		assert.True(t, ok)
+		assert.Equal(t, "stability.stable-image-ultra-v1:1", stability.Model())
+		assert.Equal(t, "us-west-2", stability.Region())
+	})
 }

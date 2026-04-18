@@ -301,8 +301,9 @@ export const PanelSlide: React.FC<{ panel: Panel; colorFilter?: string }> = ({ p
     <div style={buildTextStyle()}>
       {subtitleText}
       <div style={{
-        height: 1,
-        backgroundColor: "rgba(255,255,255,0.55)",
+        height: 2,
+        backgroundColor: "rgba(255,255,255,0.9)",
+        boxShadow: "0 0 8px rgba(255,255,255,0.7)",
         width: `${underlineW}%`,
         margin: "5px auto 0",
       }} />
@@ -460,8 +461,9 @@ export const PanelSlide: React.FC<{ panel: Panel; colorFilter?: string }> = ({ p
               }}>Paul & Anli</div>
               {/* Expanding line */}
               <div style={{
-                height: 1,
-                backgroundColor: "rgba(245,239,230,0.38)",
+                height: 2,
+                backgroundColor: "rgba(255,255,255,0.9)",
+                boxShadow: "0 0 8px rgba(255,255,255,0.7)",
                 width: `${underlineW}%`,
                 margin: "20px auto 18px",
               }} />

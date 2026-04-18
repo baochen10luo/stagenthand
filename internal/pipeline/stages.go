@@ -146,11 +146,11 @@ func langInstruction(lang string) string {
 // BuildStoryboardToPanelsPrompt returns the PromptStoryboardToPanels with optional language instruction appended.
 // Exported for testing. Internal callers use buildStoryboardToPanelsPrompt.
 func BuildStoryboardToPanelsPrompt(language string, sb domain.Storyboard) string {
-	return buildStoryboardToPanelsPrompt(language, sb)
+	return buildStoryboardToPanelsPrompt(language, sb, 0)
 }
 
 // buildStoryboardToPanelsPrompt returns the PromptStoryboardToPanels with optional language instruction appended.
-func buildStoryboardToPanelsPrompt(language string, sb domain.Storyboard) string {
+func buildStoryboardToPanelsPrompt(language string, sb domain.Storyboard, targetPanels int) string {
 	base := PromptStoryboardToPanels
 
 	// Check language from storyboard directives first, then from orchestrator deps language
@@ -164,8 +164,13 @@ func buildStoryboardToPanelsPrompt(language string, sb domain.Storyboard) string
 	}
 
 	if instruction, ok := languageInstructions[lang]; ok {
-		return base + "\n" + instruction
+		base = base + "\n" + instruction
 	}
+
+	if targetPanels > 0 {
+		base = base + fmt.Sprintf("\nIMPORTANT: Generate exactly %d panels total across all scenes.", targetPanels)
+	}
+
 	return base
 }
 

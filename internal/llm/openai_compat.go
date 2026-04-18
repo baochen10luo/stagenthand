@@ -19,6 +19,11 @@ type OpenAICompatibleClient struct {
 
 // NewOpenAICompatibleClient handles exponential backoff and sets up resty.
 func NewOpenAICompatibleClient(baseURL, apiKey, model string) *OpenAICompatibleClient {
+	return NewOpenAICompatibleClientWithHeaders(baseURL, apiKey, model, nil)
+}
+
+// NewOpenAICompatibleClientWithHeaders creates a client with additional request headers.
+func NewOpenAICompatibleClientWithHeaders(baseURL, apiKey, model string, extraHeaders map[string]string) *OpenAICompatibleClient {
 	if baseURL == "" {
 		baseURL = "https://pgb.zeabur.app/v1"
 	}
@@ -32,6 +37,10 @@ func NewOpenAICompatibleClient(baseURL, apiKey, model string) *OpenAICompatibleC
 		SetRetryCount(3).
 		SetRetryWaitTime(2 * time.Second).
 		SetRetryMaxWaitTime(10 * time.Second)
+
+	for k, v := range extraHeaders {
+		r.SetHeader(k, v)
+	}
 
 	return &OpenAICompatibleClient{
 		client: r,

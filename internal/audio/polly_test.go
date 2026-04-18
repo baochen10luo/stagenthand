@@ -19,6 +19,8 @@ func TestFormatSSML(t *testing.T) {
 		{"Stage directions", "Go away [shouting]", "<speak><prosody rate=\"90%\">Go away</prosody></speak>"},
 		{"Scrub quotes", "\"Yes\", he said", "<speak><prosody rate=\"90%\">Yes, he said</prosody></speak>"},
 		{"XML escape", "Tom & Jerry", "<speak><prosody rate=\"90%\">Tom &amp; Jerry</prosody></speak>"},
+		{"Numeric hyphen to zhi", "版本 3-5 已發布", "<speak><prosody rate=\"90%\">版本 3之5 已發布</prosody></speak>"},
+		{"Full-width brackets add break", "提示【重要事項】請記住", "<speak><prosody rate=\"90%\">提示【重要事項】<break time=\"500ms\"/>請記住</prosody></speak>"},
 		{"Empty string", "", "<speak></speak>"},
 	}
 

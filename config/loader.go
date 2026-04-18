@@ -93,6 +93,8 @@ func Load(cfgFile string) (*Config, error) {
 	v.SetDefault("llm.model", "gpt-4o")
 	v.SetDefault("llm.aws_region", "us-east-1")
 	v.SetDefault("image.provider", "nanobanana")
+	v.SetDefault("image.model", "amazon.titan-image-generator-v2:0")
+	v.SetDefault("image.region", "us-west-2")
 	v.SetDefault("image.width", 1024)
 	v.SetDefault("image.height", 576)
 	v.SetDefault("video.enabled", false)

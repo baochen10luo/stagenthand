@@ -2,6 +2,7 @@ package image
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
@@ -15,6 +16,7 @@ import (
 type StabilityClient struct {
 	client      bedrockInvoker
 	model       string
+	region      string
 	aspectRatio string
 }
 
@@ -24,7 +26,7 @@ func NewStabilityClient(accessKey, secretKey, region, model string, width, heigh
 		region = "us-east-1"
 	}
 	if model == "" {
-		model = "stability.sd3-ultra-v1:1"
+		model = "stability.stable-image-ultra-v1:1"
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.Background(),
@@ -38,6 +40,7 @@ func NewStabilityClient(accessKey, secretKey, region, model string, width, heigh
 	return &StabilityClient{
 		client:      bedrockruntime.NewFromConfig(cfg),
 		model:       model,
+		region:      region,
 		aspectRatio: aspectRatioForDimensions(width, height),
 	}, nil
 }
@@ -65,7 +68,7 @@ func (c *StabilityClient) GenerateImage(ctx context.Context, prompt string, char
 		ModelId:     aws.String(c.model),
 		Body:        body,
 		ContentType: aws.String("application/json"),
-		Accept:      aws.String("image/png"),
+		Accept:      aws.String("application/json"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bedrock invoke failed: %w", err)
@@ -75,7 +78,20 @@ func (c *StabilityClient) GenerateImage(ctx context.Context, prompt string, char
 		return nil, fmt.Errorf("no image bytes returned from Stability")
 	}
 
-	return resp.Body, nil
+	var result struct {
+		Images []string `json:"images"`
+	}
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Stability response: %w", err)
+	}
+	if len(result.Images) == 0 {
+		return nil, fmt.Errorf("no images in Stability response")
+	}
+	imgBytes, err := base64.StdEncoding.DecodeString(result.Images[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode Stability image: %w", err)
+	}
+	return imgBytes, nil
 }
 
 func aspectRatioForDimensions(width, height int) string {
@@ -87,4 +103,14 @@ func aspectRatioForDimensions(width, height int) string {
 	default:
 		return "16:9"
 	}
+}
+
+// Model returns the resolved Bedrock model ID for tests and diagnostics.
+func (c *StabilityClient) Model() string {
+	return c.model
+}
+
+// Region returns the resolved AWS region for tests and diagnostics.
+func (c *StabilityClient) Region() string {
+	return c.region
 }

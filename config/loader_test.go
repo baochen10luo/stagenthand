@@ -20,6 +20,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Image.Width != 1024 {
 		t.Errorf("Image.Width = %d, want 1024", cfg.Image.Width)
 	}
+	if cfg.Image.Region != "us-west-2" {
+		t.Errorf("Image.Region = %q, want %q", cfg.Image.Region, "us-west-2")
+	}
+	if cfg.Image.Model != "amazon.titan-image-generator-v2:0" {
+		t.Errorf("Image.Model = %q, want %q", cfg.Image.Model, "amazon.titan-image-generator-v2:0")
+	}
 	if cfg.Server.Port != 28080 {
 		t.Errorf("Server.Port = %d, want 28080", cfg.Server.Port)
 	}

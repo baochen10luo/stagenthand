@@ -2,6 +2,7 @@ package image
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/baochen10luo/stagenthand/config"
 	"github.com/baochen10luo/stagenthand/internal/render"
@@ -30,26 +31,41 @@ func NewClientWithFormat(provider string, dryRun bool, cfg *config.Config, forma
 	case "bedrock":
 		model := cfg.Image.Model
 		if model == "" {
-			model = "amazon.nova-canvas-v1:0"
+			model = "amazon.titan-image-generator-v2:0"
 		}
-		return NewNovaCanvasClient(
-			cfg.LLM.AWSAccessKeyID,
-			cfg.LLM.AWSSecretAccessKey,
-			cfg.LLM.AWSRegion,
-			model,
-			width,
-			height,
-			"",
-		)
+		region := imageRegionForModel(cfg, model)
+		switch {
+		case strings.HasPrefix(model, "amazon.nova-canvas"):
+			return NewNovaCanvasClient(
+				cfg.LLM.AWSAccessKeyID,
+				cfg.LLM.AWSSecretAccessKey,
+				region,
+				model,
+				width,
+				height,
+				"",
+			)
+		case strings.HasPrefix(model, "amazon.titan-image-generator"):
+			return NewTitanImageClient(
+				cfg.LLM.AWSAccessKeyID,
+				cfg.LLM.AWSSecretAccessKey,
+				region,
+				model,
+				width,
+				height,
+			)
+		default:
+			return nil, fmt.Errorf("bedrock image model %s is not supported", model)
+		}
 	case "stability":
 		model := cfg.Image.Model
 		if model == "" {
-			model = "stability.sd3-ultra-v1:1"
+			model = "stability.stable-image-ultra-v1:1"
 		}
 		return NewStabilityClient(
 			cfg.LLM.AWSAccessKeyID,
 			cfg.LLM.AWSSecretAccessKey,
-			cfg.LLM.AWSRegion,
+			imageRegionForModel(cfg, model),
 			model,
 			width,
 			height,
@@ -57,4 +73,20 @@ func NewClientWithFormat(provider string, dryRun bool, cfg *config.Config, forma
 	default:
 		return nil, fmt.Errorf("provider %s not implemented yet. Use --dry-run for testing", provider)
 	}
+}
+
+func imageRegionForModel(cfg *config.Config, model string) string {
+	if cfg != nil && cfg.Image.Region != "" {
+		return cfg.Image.Region
+	}
+	if cfg != nil && cfg.LLM.AWSRegion != "" {
+		if strings.HasPrefix(model, "amazon.titan-image-generator") {
+			return "us-west-2"
+		}
+		return cfg.LLM.AWSRegion
+	}
+	if strings.HasPrefix(model, "amazon.titan-image-generator") {
+		return "us-west-2"
+	}
+	return "us-east-1"
 }

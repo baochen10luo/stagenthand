@@ -8,6 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/baochen10luo/stagenthand/config"
 	"github.com/baochen10luo/stagenthand/internal/audio"
@@ -37,6 +40,8 @@ var (
 	pipelineSeriesWindow  int
 	pipelineVideoBackend  string // "remotion" (default) or "nova_reel" or "grok_browser"
 	pipelineImageDir      string // pre-existing image directory; skips image generation when set
+	pipelineTargetPanels  int    // when > 0, LLM is instructed to generate exactly this many panels
+	pipelineI2V           bool   // image-to-video mode: use --image-dir illustrations as I2V references
 )
 
 var pipelineCmd = &cobra.Command{
@@ -76,7 +81,11 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	videoFormat := render.VideoFormat(pipelineFormat)
 	var imgBatcher pipeline.ImageBatcher
 	if pipelineImageDir != "" {
-		imgBatcher = pipeline.NewPrebuiltImageBatcher(pipelineImageDir, shandHome)
+		if pipelineI2V {
+			imgBatcher = pipeline.NewPrebuiltImageBatcherWithOffset(pipelineImageDir, shandHome, 1)
+		} else {
+			imgBatcher = pipeline.NewPrebuiltImageBatcher(pipelineImageDir, shandHome)
+		}
 	} else {
 		imgProvider := "mock"
 		if cfg != nil && cfg.Image.Provider != "" {
@@ -136,14 +145,15 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	// Wire orchestrator
 	deps := pipeline.OrchestratorDeps{
-		LLM:         llmClient,
-		Images:      imgBatcher,
-		Audio:       audioBatcher,
-		Music:       pipeline.NewMusicClientBatcher(musicClient, shandHome),
-		Checkpoints: ckptGate,
-		DryRun:      dryRun,
-		SkipHITL:    pipelineSkipHITL,
-		Language:    pipelineLanguage,
+		LLM:          llmClient,
+		Images:       imgBatcher,
+		Audio:        audioBatcher,
+		Music:        pipeline.NewMusicClientBatcher(musicClient, shandHome),
+		Checkpoints:  ckptGate,
+		DryRun:       dryRun,
+		SkipHITL:     pipelineSkipHITL,
+		Language:     pipelineLanguage,
+		TargetPanels: pipelineTargetPanels,
 	}
 	orch := pipeline.NewOrchestrator(deps)
 
@@ -331,7 +341,24 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 			}
 		}
 	} else if videoBackend == "grok_browser" && !dryRun {
-		grokVideoPath, grokErr := runGrokBrowserStage(cmd.Context(), result.Panels, props, pipelineOutputDir)
+		var i2vImages []string
+		if pipelineI2V && pipelineImageDir != "" {
+			entries, _ := os.ReadDir(pipelineImageDir)
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				ext := strings.ToLower(filepath.Ext(e.Name()))
+				if ext == ".png" || ext == ".jpg" || ext == ".jpeg" {
+					i2vImages = append(i2vImages, filepath.Join(pipelineImageDir, e.Name()))
+				}
+			}
+			sort.Strings(i2vImages)
+			if len(i2vImages) > 0 {
+				i2vImages = i2vImages[1:] // skip cover (_1.png)
+			}
+		}
+		grokVideoPath, grokErr := runGrokBrowserStage(cmd.Context(), result.Panels, props, pipelineOutputDir, i2vImages)
 		if grokErr != nil {
 			fmt.Fprintf(os.Stderr, "[Warning] Grok Browser stage failed, using static video: %v\n", grokErr)
 		} else {
@@ -399,6 +426,10 @@ func init() {
 		"video backend: remotion (default), nova_reel, or grok_browser")
 	pipelineCmd.Flags().StringVar(&pipelineImageDir, "image-dir", "",
 		"use pre-existing images from this directory (sorted by filename); skips image generation API")
+	pipelineCmd.Flags().IntVar(&pipelineTargetPanels, "panels", 0,
+		"target number of panels (0 = auto); used with --i2v to match illustration count")
+	pipelineCmd.Flags().BoolVar(&pipelineI2V, "i2v", false,
+		"image-to-video mode: skip cover image, use remaining --image-dir illustrations as I2V references in grok_browser stage")
 	rootCmd.AddCommand(pipelineCmd)
 }
 
@@ -478,7 +509,7 @@ func runNovaReelStage(ctx context.Context, panels []domain.Panel, props domain.R
 
 // runGrokBrowserStage generates a video shot for each panel via opencli grok video (browser automation),
 // then concatenates all shots into a single mp4.
-func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domain.RemotionProps, outputDir string) (string, error) {
+func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domain.RemotionProps, outputDir string, imagePaths []string) (string, error) {
 	if outputDir == "" {
 		home, _ := os.UserHomeDir()
 		outputDir = filepath.Join(home, ".shand", "projects", props.ProjectID)
@@ -487,12 +518,6 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 	shotsDir := filepath.Join(outputDir, "shots")
 	if err := os.MkdirAll(shotsDir, 0755); err != nil {
 		return "", fmt.Errorf("create shots dir: %w", err)
-	}
-
-	// Resolve global style prompt from storyboard directives
-	stylePrefix := ""
-	if props.Directives != nil && props.Directives.StylePrompt != "" {
-		stylePrefix = props.Directives.StylePrompt + ", "
 	}
 
 	var shotPaths []string
@@ -506,7 +531,7 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 			continue
 		}
 
-		prompt := stylePrefix + panel.Description
+		prompt := panel.Description
 
 		fmt.Fprintf(os.Stderr, "[Info] Generating Grok video for panel %d/%d: %s\n", i+1, len(panels), prompt)
 
@@ -515,13 +540,43 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 		opencliArgs := []string{
 			"grok", "video", prompt,
 			"--output", shotsDir,
-			"--timeout", "240",
+			"--timeout", "360",
 		}
-		execCmd := exec.CommandContext(ctx, "opencli", opencliArgs...)
-		execCmd.Env = append(os.Environ(), "OPENCLI_CDP_TARGET=grok.com", "OPENCLI_BROWSER_COMMAND_TIMEOUT=240")
-		out, err := execCmd.CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("opencli grok video panel %d failed: %w\noutput: %s", i+1, err, string(out))
+		if len(imagePaths) > i {
+			opencliArgs = append(opencliArgs, "--image", imagePaths[i])
+		}
+		// Run opencli with up to 5 attempts per panel; fail hard if all attempts exhausted
+		const maxAttempts = 5
+		var runOut []byte
+		var panelErr error
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			if attempt > 0 {
+				fmt.Fprintf(os.Stderr, "[Info] Retrying Grok video panel %d (attempt %d/%d)\n", i+1, attempt+1, maxAttempts)
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(8 * time.Second):
+				}
+			}
+			execCmd := exec.CommandContext(ctx, "opencli", opencliArgs...)
+			execCmd.Env = append(os.Environ(), "OPENCLI_CDP_TARGET=grok.com", "OPENCLI_BROWSER_COMMAND_TIMEOUT=420")
+			runOut, panelErr = execCmd.CombinedOutput()
+			outStr := string(runOut)
+			if panelErr != nil {
+				fmt.Fprintf(os.Stderr, "[Warning] opencli panel %d exit error (attempt %d): %v\n", i+1, attempt+1, panelErr)
+				panelErr = fmt.Errorf("exit error: %w", panelErr)
+				continue
+			}
+			if strings.Contains(outStr, "[ERROR]") || strings.Contains(outStr, "[TIMEOUT]") {
+				fmt.Fprintf(os.Stderr, "[Warning] opencli panel %d adapter error (attempt %d): %s\n", i+1, attempt+1, strings.TrimSpace(outStr))
+				panelErr = fmt.Errorf("adapter error: %s", strings.TrimSpace(outStr))
+				continue
+			}
+			panelErr = nil
+			break
+		}
+		if panelErr != nil {
+			return "", fmt.Errorf("grok video panel %d failed after %d attempts: %w", i+1, maxAttempts, panelErr)
 		}
 
 		// opencli writes to --output dir; find the latest mp4 in shotsDir that isn't already tracked
@@ -554,7 +609,7 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 		}
 
 		if info, statErr := os.Stat(shotPath); statErr != nil || info.Size() == 0 {
-			return "", fmt.Errorf("grok video panel %d: output file missing or empty", i+1)
+			return "", fmt.Errorf("grok video panel %d: output file missing or empty after %d attempts", i+1, maxAttempts)
 		}
 
 		shotPaths = append(shotPaths, shotPath)

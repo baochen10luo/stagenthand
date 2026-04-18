@@ -7,32 +7,27 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
-type bedrockInvoker interface {
-	InvokeModel(ctx context.Context, params *bedrockruntime.InvokeModelInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error)
-}
-
-// NovaCanvasClient implements the image.Client interface using AWS Bedrock Nova Canvas.
-type NovaCanvasClient struct {
+// TitanImageClient implements the image.Client interface using Amazon Titan Image Generator.
+type TitanImageClient struct {
 	client bedrockInvoker
 	model  string
 	region string
 	width  int
 	height int
-	refDir string
 }
 
-// NewNovaCanvasClient initializes an AWS Bedrock Runtime client.
-func NewNovaCanvasClient(accessKey, secretKey, region, model string, width, height int, refDir string) (*NovaCanvasClient, error) {
+// NewTitanImageClient initializes an AWS Bedrock Runtime client for Titan Image Generator.
+func NewTitanImageClient(accessKey, secretKey, region, model string, width, height int) (*TitanImageClient, error) {
 	if region == "" {
-		region = "us-east-1"
+		region = "us-west-2"
 	}
 	if model == "" {
-		model = "amazon.nova-canvas-v1:0"
+		model = "amazon.titan-image-generator-v2:0"
 	}
 	if width == 0 {
 		width = 1024
@@ -41,61 +36,56 @@ func NewNovaCanvasClient(accessKey, secretKey, region, model string, width, heig
 		height = 576
 	}
 
-	cfg, err := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion(region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	return &NovaCanvasClient{
+	return &TitanImageClient{
 		client: bedrockruntime.NewFromConfig(cfg),
 		model:  model,
 		region: region,
 		width:  width,
 		height: height,
-		refDir: refDir,
 	}, nil
 }
 
-// GenerateImage sends a prompt to Nova Canvas and returns the generated image bytes.
-func (c *NovaCanvasClient) GenerateImage(ctx context.Context, prompt string, characterRefs []string) ([]byte, error) {
-	// Nova Canvas Text-To-Image Body
-	type TextToImageParams struct {
+// GenerateImage sends a prompt to Titan and returns the generated image bytes.
+func (c *TitanImageClient) GenerateImage(ctx context.Context, prompt string, characterRefs []string) ([]byte, error) {
+	type textToImageParams struct {
 		Text string `json:"text"`
 	}
 
-	type ImageGenerationConfig struct {
+	type imageGenerationConfig struct {
+		Quality        string  `json:"quality"`
 		NumberOfImages int     `json:"numberOfImages"`
 		Height         int     `json:"height"`
 		Width          int     `json:"width"`
 		CfgScale       float64 `json:"cfgScale,omitempty"`
 	}
 
-	type NovaCanvasRequest struct {
+	type titanRequest struct {
 		TaskType              string                `json:"taskType"`
-		TextToImageParams     TextToImageParams     `json:"textToImageParams"`
-		ImageGenerationConfig ImageGenerationConfig `json:"imageGenerationConfig"`
+		TextToImageParams     textToImageParams     `json:"textToImageParams"`
+		ImageGenerationConfig imageGenerationConfig `json:"imageGenerationConfig"`
 	}
 
-	// For now, shand simple implementation doesn't pass image conditioning
-	// until we define a clearer schema for multi-image prompts in shand.
-	// We use the provided width/height from config.
-	input := NovaCanvasRequest{
+	body, err := json.Marshal(titanRequest{
 		TaskType: "TEXT_IMAGE",
-		TextToImageParams: TextToImageParams{
+		TextToImageParams: textToImageParams{
 			Text: prompt,
 		},
-		ImageGenerationConfig: ImageGenerationConfig{
+		ImageGenerationConfig: imageGenerationConfig{
+			Quality:        "standard",
 			NumberOfImages: 1,
 			Height:         c.height,
 			Width:          c.width,
-			CfgScale:       7.0, // Default balanced scale
+			CfgScale:       8.0,
 		},
-	}
-
-	body, err := json.Marshal(input)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -110,17 +100,18 @@ func (c *NovaCanvasClient) GenerateImage(ctx context.Context, prompt string, cha
 		return nil, fmt.Errorf("bedrock invoke failed: %w", err)
 	}
 
-	type NovaCanvasResponse struct {
+	var res struct {
 		Images []string `json:"images"`
+		Error  string   `json:"error"`
 	}
-
-	var res NovaCanvasResponse
 	if err := json.Unmarshal(resp.Body, &res); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
-
+	if res.Error != "" {
+		return nil, fmt.Errorf("titan image generation failed: %s", res.Error)
+	}
 	if len(res.Images) == 0 {
-		return nil, fmt.Errorf("no images returned from Nova Canvas")
+		return nil, fmt.Errorf("no images returned from Titan Image Generator")
 	}
 
 	imgBytes, err := base64.StdEncoding.DecodeString(res.Images[0])
@@ -132,11 +123,11 @@ func (c *NovaCanvasClient) GenerateImage(ctx context.Context, prompt string, cha
 }
 
 // Model returns the resolved Bedrock model ID for tests and diagnostics.
-func (c *NovaCanvasClient) Model() string {
+func (c *TitanImageClient) Model() string {
 	return c.model
 }
 
 // Region returns the resolved AWS region for tests and diagnostics.
-func (c *NovaCanvasClient) Region() string {
+func (c *TitanImageClient) Region() string {
 	return c.region
 }

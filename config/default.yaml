@@ -6,7 +6,9 @@ llm:
 
 image:
   provider: nanobanana
+  model: amazon.titan-image-generator-v2:0
   api_key: ""
+  region: us-west-2
   width: 1024
   height: 576
   character_refs_dir: ""

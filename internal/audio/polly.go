@@ -164,14 +164,47 @@ func formatSSML(dialogue string) string {
 	dialogue = strings.ReplaceAll(dialogue, "\"", "")
 	dialogue = strings.ReplaceAll(dialogue, "'", "")
 
-	// 5. XML Escape to protect SSML parser
-	safeText := html.EscapeString(strings.TrimSpace(dialogue))
+	// 5. Rewrite numeric hyphen ranges so Polly reads them as "之" instead of a minus pause.
+	hyphenNumRegex := regexp.MustCompile(`(\d+)-(\d+)`)
+	dialogue = hyphenNumRegex.ReplaceAllString(dialogue, "${1}之${2}")
+
+	dialogue = strings.TrimSpace(dialogue)
+
+	// 6. XML Escape while preserving full-width bracket segments and adding a pause after each one.
+	var builder strings.Builder
+	for len(dialogue) > 0 {
+		start := strings.IndexRune(dialogue, '【')
+		if start == -1 {
+			builder.WriteString(html.EscapeString(dialogue))
+			break
+		}
+
+		if start > 0 {
+			builder.WriteString(html.EscapeString(dialogue[:start]))
+		}
+
+		endOffset := strings.IndexRune(dialogue[start+len("【"):], '】')
+		if endOffset == -1 {
+			builder.WriteString(html.EscapeString(dialogue[start:]))
+			break
+		}
+
+		end := start + len("【") + endOffset
+		inner := dialogue[start+len("【") : end]
+		builder.WriteString("【")
+		builder.WriteString(html.EscapeString(inner))
+		builder.WriteString("】<break time=\"500ms\"/>")
+
+		dialogue = dialogue[end+len("】"):]
+	}
+
+	safeText := builder.String()
 
 	if safeText == "" {
 		return "<speak></speak>"
 	}
 
-	// 6. Wrap in SSML
+	// 7. Wrap in SSML
 	if isWhisper {
 		safeText = fmt.Sprintf("<amazon:effect name=\"whispered\">%s</amazon:effect>", safeText)
 	}

@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/baochen10luo/stagenthand/config"
 	"github.com/baochen10luo/stagenthand/internal/pipeline"
@@ -58,6 +59,25 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 			}
 		}
 		return NewOpenAICompatibleClient(baseURL, apiKey, model), nil
+	case "anthropic":
+		model := "claude-sonnet-4-6"
+		apiKey := ""
+		if cfg != nil {
+			if cfg.LLM.Model != "" {
+				model = cfg.LLM.Model
+			}
+			apiKey = cfg.LLM.APIKey
+		}
+		// Fall back to ANTHROPIC_API_KEY env var if not in config
+		if apiKey == "" {
+			apiKey = os.Getenv("ANTHROPIC_API_KEY")
+		}
+		return NewOpenAICompatibleClientWithHeaders(
+			"https://api.anthropic.com/v1",
+			apiKey,
+			model,
+			map[string]string{"anthropic-version": "2023-06-01"},
+		), nil
 	case "bedrock":
 		return NewBedrockClient(
 			cfg.LLM.AWSAccessKeyID,

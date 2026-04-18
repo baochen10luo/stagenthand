@@ -91,11 +91,18 @@ func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []d
 type PrebuiltImageBatcher struct {
 	imageDir string
 	rootDir  string // shandHome (~/.shand)
+	offset   int    // number of leading files to skip (e.g. 1 to skip cover image)
 }
 
 // NewPrebuiltImageBatcher returns an ImageBatcher that assigns sorted files from imageDir to panels.
 func NewPrebuiltImageBatcher(imageDir, rootDir string) ImageBatcher {
 	return &PrebuiltImageBatcher{imageDir: imageDir, rootDir: rootDir}
+}
+
+// NewPrebuiltImageBatcherWithOffset is like NewPrebuiltImageBatcher but skips the first `offset` files.
+// Use offset=1 to skip a cover image (e.g. _1.png) in --i2v mode.
+func NewPrebuiltImageBatcherWithOffset(imageDir, rootDir string, offset int) ImageBatcher {
+	return &PrebuiltImageBatcher{imageDir: imageDir, rootDir: rootDir, offset: offset}
 }
 
 func (b *PrebuiltImageBatcher) BatchGenerateImages(_ context.Context, panels []domain.Panel, targetDir string) ([]domain.Panel, error) {
@@ -117,6 +124,10 @@ func (b *PrebuiltImageBatcher) BatchGenerateImages(_ context.Context, panels []d
 	}
 	if len(files) == 0 {
 		return nil, fmt.Errorf("prebuilt image dir %q: no image files found", b.imageDir)
+	}
+	// Skip leading files (e.g. cover image in --i2v mode)
+	if b.offset > 0 && b.offset < len(files) {
+		files = files[b.offset:]
 	}
 
 	// Copy images to targetDir so remotion normalizePath works
