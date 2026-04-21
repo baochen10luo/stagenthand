@@ -123,5 +123,24 @@ func Load(cfgFile string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
+	// Expand ~ and $HOME in paths that may come from config files.
+	cfg.Remotion.TemplatePath = expandHome(cfg.Remotion.TemplatePath)
+	cfg.Store.DBPath = expandHome(cfg.Store.DBPath)
 	return &cfg, nil
+}
+
+func expandHome(p string) string {
+	if p == "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(p, "~/") {
+		return filepath.Join(home, p[2:])
+	}
+	return os.Expand(p, func(key string) string {
+		if key == "HOME" {
+			return home
+		}
+		return os.Getenv(key)
+	})
 }
