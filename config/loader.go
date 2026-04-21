@@ -85,7 +85,12 @@ type ServerConfig struct {
 }
 
 // Load reads configuration from the given file path (may be empty for defaults only).
+// It also auto-loads ~/.shand/.env (if it exists) before processing any other config,
+// so credentials like NOTION_API_KEY can live alongside config.yaml.
 func Load(cfgFile string) (*Config, error) {
+	home, _ := os.UserHomeDir()
+	_ = loadDotEnv(filepath.Join(home, ".shand", ".env"))
+
 	v := viper.New()
 
 	// Defaults
@@ -127,6 +132,34 @@ func Load(cfgFile string) (*Config, error) {
 	cfg.Remotion.TemplatePath = expandHome(cfg.Remotion.TemplatePath)
 	cfg.Store.DBPath = expandHome(cfg.Store.DBPath)
 	return &cfg, nil
+}
+
+// loadDotEnv parses a KEY=VALUE file and sets missing env vars (existing vars win).
+func loadDotEnv(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err // file not found is normal; caller ignores the error
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		// Strip optional surrounding quotes
+		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+			val = val[1 : len(val)-1]
+		}
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
+	}
+	return nil
 }
 
 func expandHome(p string) string {
