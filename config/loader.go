@@ -88,6 +88,8 @@ type ServerConfig struct {
 // It also auto-loads ~/.shand/.env (if it exists) before processing any other config,
 // so credentials like NOTION_API_KEY can live alongside config.yaml.
 func Load(cfgFile string) (*Config, error) {
+	// Load .env: project root (CWD) first, then ~/.shand/.env as fallback.
+	_ = loadDotEnv(".env")
 	home, _ := os.UserHomeDir()
 	_ = loadDotEnv(filepath.Join(home, ".shand", ".env"))
 
