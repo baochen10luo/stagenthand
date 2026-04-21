@@ -1,14 +1,21 @@
 package cmd
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,20 +35,21 @@ import (
 )
 
 var (
-	pipelineSkipHITL      bool
-	pipelineOutputDir     string
-	pipelineLanguage      string
-	pipelineMaxRetries    int
-	pipelineEpisodes      int
-	pipelineBatchConc     int
-	pipelineFormat        string // "landscape" or "portrait"
-	pipelineMultiSpeaker  bool
-	pipelineSeriesMemory  bool
-	pipelineSeriesWindow  int
-	pipelineVideoBackend  string // "remotion" (default) or "nova_reel" or "grok_browser"
-	pipelineImageDir      string // pre-existing image directory; skips image generation when set
-	pipelineTargetPanels  int    // when > 0, LLM is instructed to generate exactly this many panels
-	pipelineI2V           bool   // image-to-video mode: use --image-dir illustrations as I2V references
+	pipelineSkipHITL     bool
+	pipelineSkipLLM      bool
+	pipelineOutputDir    string
+	pipelineLanguage     string
+	pipelineMaxRetries   int
+	pipelineEpisodes     int
+	pipelineBatchConc    int
+	pipelineFormat       string // "landscape" or "portrait"
+	pipelineMultiSpeaker bool
+	pipelineSeriesMemory bool
+	pipelineSeriesWindow int
+	pipelineVideoBackend string // "remotion" (default) or "nova_reel" or "grok_browser"
+	pipelineImageDir     string // pre-existing image directory; skips image generation when set
+	pipelineTargetPanels int    // when > 0, LLM is instructed to generate exactly this many panels
+	pipelineI2V          bool   // image-to-video mode: use --image-dir illustrations as I2V references
 )
 
 var pipelineCmd = &cobra.Command{
@@ -186,9 +194,53 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(batchResult)
 	}
 
-	result, err := orch.Run(context.Background(), inputData)
-	if err != nil {
-		return stageError("pipeline", "pipeline_error", err.Error())
+	var result *pipeline.PipelineResult
+	if pipelineSkipLLM {
+		propsPath, resolveErr := resolveSkipLLMPropsPath()
+		if resolveErr != nil {
+			return stageError("pipeline", "skip_llm_props_error", resolveErr.Error())
+		}
+
+		projectID, panels, loadErr := loadPanelsFromProps(propsPath)
+		if loadErr != nil {
+			return stageError("pipeline", "skip_llm_props_error", loadErr.Error())
+		}
+
+		existingProps, propsErr := readRemotionProps(propsPath)
+		if propsErr != nil {
+			return stageError("pipeline", "skip_llm_props_error", propsErr.Error())
+		}
+
+		result = &pipeline.PipelineResult{
+			Storyboard: domain.Storyboard{
+				ProjectID:  projectID,
+				BGMURL:     existingProps.BGMURL,
+				Directives: existingProps.Directives,
+			},
+			Panels: panels,
+			Props:  existingProps,
+		}
+	} else {
+		result, err = orch.Run(context.Background(), inputData)
+		if err != nil {
+			return stageError("pipeline", "pipeline_error", err.Error())
+		}
+	}
+
+	if !dryRun {
+		notionPageID := os.Getenv("NOTION_GROK_PAGE_ID")
+		if notionPageID == "" {
+			notionPageID = "3485ee2ef54d8034bb8ceabf27c3f29c"
+		}
+		notionToken := os.Getenv("NOTION_API_KEY")
+		i2vImagesBefore := collectPipelineI2VImages()
+		coverImage := collectCoverImage()
+		updatedPanels, hitlErr := notionDBHITL(cmd.Context(), result.Panels, i2vImagesBefore, coverImage, result.Storyboard.ProjectID, notionPageID, notionToken)
+		if hitlErr != nil {
+			fmt.Fprintf(os.Stderr, "[Warning] Notion HITL skipped: %v\n", hitlErr)
+		} else {
+			result.Panels = updatedPanels
+		}
 	}
 
 	// Write remotion props
@@ -341,23 +393,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 			}
 		}
 	} else if videoBackend == "grok_browser" && !dryRun {
-		var i2vImages []string
-		if pipelineI2V && pipelineImageDir != "" {
-			entries, _ := os.ReadDir(pipelineImageDir)
-			for _, e := range entries {
-				if e.IsDir() {
-					continue
-				}
-				ext := strings.ToLower(filepath.Ext(e.Name()))
-				if ext == ".png" || ext == ".jpg" || ext == ".jpeg" {
-					i2vImages = append(i2vImages, filepath.Join(pipelineImageDir, e.Name()))
-				}
-			}
-			sort.Strings(i2vImages)
-			if len(i2vImages) > 0 {
-				i2vImages = i2vImages[1:] // skip cover (_1.png)
-			}
-		}
+		i2vImages := collectPipelineI2VImages()
 		grokVideoPath, grokErr := runGrokBrowserStage(cmd.Context(), result.Panels, props, pipelineOutputDir, i2vImages)
 		if grokErr != nil {
 			fmt.Fprintf(os.Stderr, "[Warning] Grok Browser stage failed, using static video: %v\n", grokErr)
@@ -408,8 +444,42 @@ func writeResults(result *pipeline.PipelineResult, props domain.RemotionProps) e
 	return json.NewEncoder(f).Encode(props)
 }
 
+func resolveSkipLLMPropsPath() (string, error) {
+	if pipelineOutputDir == "" {
+		return "", fmt.Errorf("--skip-llm requires --output-dir to specify which project to reuse")
+	}
+	return filepath.Join(pipelineOutputDir, "remotion_props.json"), nil
+}
+
+func readRemotionProps(propsPath string) (domain.RemotionProps, error) {
+	data, err := os.ReadFile(propsPath)
+	if err != nil {
+		return domain.RemotionProps{}, fmt.Errorf("read remotion_props.json: %w", err)
+	}
+
+	var props domain.RemotionProps
+	if err := json.Unmarshal(data, &props); err != nil {
+		return domain.RemotionProps{}, fmt.Errorf("parse remotion_props.json: %w", err)
+	}
+
+	return props, nil
+}
+
+func loadPanelsFromProps(propsPath string) (string, []domain.Panel, error) {
+	props, err := readRemotionProps(propsPath)
+	if err != nil {
+		return "", nil, err
+	}
+
+	panels := make([]domain.Panel, len(props.Panels))
+	copy(panels, props.Panels)
+
+	return props.ProjectID, panels, nil
+}
+
 func init() {
 	pipelineCmd.Flags().BoolVar(&pipelineSkipHITL, "skip-hitl", false, "skip all human-in-the-loop checkpoints")
+	pipelineCmd.Flags().BoolVar(&pipelineSkipLLM, "skip-llm", false, "skip LLM generation and reuse existing remotion_props.json")
 	pipelineCmd.Flags().StringVar(&pipelineOutputDir, "output-dir", "", "output directory (default: ~/.shand/projects/<project-id>)")
 	pipelineCmd.Flags().StringVar(&pipelineLanguage, "language", "zh-TW", "TTS/dialogue language (zh-TW, en-US, en-GB, ja-JP, ko-KR, cmn-CN)")
 	pipelineCmd.Flags().IntVar(&pipelineMaxRetries, "max-retries", 0, "maximum AI Critic retry attempts; also triggers automatic remotion render after props generation")
@@ -545,10 +615,11 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 		if len(imagePaths) > i {
 			opencliArgs = append(opencliArgs, "--image", imagePaths[i])
 		}
-		// Run opencli with up to 5 attempts per panel; fail hard if all attempts exhausted
-		const maxAttempts = 5
+		// Run opencli with up to 3 attempts per panel; on failure write log and hard-error
+		const maxAttempts = 3
 		var runOut []byte
 		var panelErr error
+		var attemptLogs []string
 		for attempt := 0; attempt < maxAttempts; attempt++ {
 			if attempt > 0 {
 				fmt.Fprintf(os.Stderr, "[Info] Retrying Grok video panel %d (attempt %d/%d)\n", i+1, attempt+1, maxAttempts)
@@ -563,12 +634,16 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 			runOut, panelErr = execCmd.CombinedOutput()
 			outStr := string(runOut)
 			if panelErr != nil {
+				msg := fmt.Sprintf("attempt %d: exit error: %v\noutput:\n%s", attempt+1, panelErr, outStr)
 				fmt.Fprintf(os.Stderr, "[Warning] opencli panel %d exit error (attempt %d): %v\n", i+1, attempt+1, panelErr)
+				attemptLogs = append(attemptLogs, msg)
 				panelErr = fmt.Errorf("exit error: %w", panelErr)
 				continue
 			}
 			if strings.Contains(outStr, "[ERROR]") || strings.Contains(outStr, "[TIMEOUT]") {
+				msg := fmt.Sprintf("attempt %d: adapter error\noutput:\n%s", attempt+1, outStr)
 				fmt.Fprintf(os.Stderr, "[Warning] opencli panel %d adapter error (attempt %d): %s\n", i+1, attempt+1, strings.TrimSpace(outStr))
+				attemptLogs = append(attemptLogs, msg)
 				panelErr = fmt.Errorf("adapter error: %s", strings.TrimSpace(outStr))
 				continue
 			}
@@ -576,6 +651,12 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 			break
 		}
 		if panelErr != nil {
+			// Write failure log
+			logPath := filepath.Join(shotsDir, fmt.Sprintf("shot_%03d_error.log", i+1))
+			logContent := fmt.Sprintf("panel %d failed after %d attempts\nprompt: %s\n\n%s\n",
+				i+1, maxAttempts, prompt, strings.Join(attemptLogs, "\n---\n"))
+			_ = os.WriteFile(logPath, []byte(logContent), 0644)
+			fmt.Fprintf(os.Stderr, "[Error] Grok video panel %d failed — log written to %s\n", i+1, logPath)
 			return "", fmt.Errorf("grok video panel %d failed after %d attempts: %w", i+1, maxAttempts, panelErr)
 		}
 
@@ -625,6 +706,693 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 	}
 
 	return outputPath, nil
+}
+
+func collectPipelineI2VImages() []string {
+	if !pipelineI2V || pipelineImageDir == "" {
+		return nil
+	}
+
+	entries, err := os.ReadDir(pipelineImageDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[Warning] failed to read I2V image dir %s: %v\n", pipelineImageDir, err)
+		return nil
+	}
+
+	var imagePaths []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" {
+			imagePaths = append(imagePaths, filepath.Join(pipelineImageDir, e.Name()))
+		}
+	}
+	naturalSortImages(imagePaths)
+	if len(imagePaths) > 0 {
+		imagePaths = imagePaths[1:] // skip cover (_1.png)
+	}
+	return imagePaths
+}
+
+// naturalSortImages sorts image paths by the trailing numeric part of the
+// filename stem (e.g. "cover_10.png" < "cover_2.png" becomes false after
+// natural sort). Falls back to lexicographic comparison when no number is found.
+var reTrailingNum = regexp.MustCompile(`_(\d+)(\.[^.]+)?$`)
+
+func naturalSortImages(paths []string) {
+	sort.Slice(paths, func(i, j int) bool {
+		mi := reTrailingNum.FindStringSubmatch(filepath.Base(paths[i]))
+		mj := reTrailingNum.FindStringSubmatch(filepath.Base(paths[j]))
+		if mi != nil && mj != nil {
+			ni, _ := strconv.Atoi(mi[1])
+			nj, _ := strconv.Atoi(mj[1])
+			return ni < nj
+		}
+		return paths[i] < paths[j]
+	})
+}
+
+// resolveStoryTitle looks for a .txt file in imageDir and uses its name
+// (without extension) as the story title. Falls back to projectID.
+func resolveStoryTitle(imageDir, projectID string) string {
+	if imageDir != "" {
+		entries, _ := os.ReadDir(imageDir)
+		for _, e := range entries {
+			if !e.IsDir() && strings.ToLower(filepath.Ext(e.Name())) == ".txt" {
+				return strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+			}
+		}
+	}
+	return projectID
+}
+
+func collectCoverImage() string {
+	if pipelineImageDir == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(pipelineImageDir)
+	if err != nil {
+		return ""
+	}
+	var imagePaths []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" {
+			imagePaths = append(imagePaths, filepath.Join(pipelineImageDir, e.Name()))
+		}
+	}
+	naturalSortImages(imagePaths)
+	if len(imagePaths) == 0 {
+		return ""
+	}
+	return imagePaths[0]
+}
+
+func notionDBHITL(ctx context.Context, panels []domain.Panel, imagePaths []string, coverImage string, projectID string, pageID string, token string) ([]domain.Panel, error) {
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "[Warning] NOTION_API_KEY is empty; skipping Notion HITL checkpoint")
+		return panels, nil
+	}
+	if pageID == "" {
+		return panels, fmt.Errorf("NOTION_GROK_PAGE_ID is empty")
+	}
+
+	now := time.Now()
+	storyTitle := resolveStoryTitle(pipelineImageDir, projectID)
+	dbTitle := fmt.Sprintf("%s · %s", storyTitle, now.Format("2006-01-02"))
+	if err := notionEnsurePageHeader(ctx, pageID, token, dbTitle, storyTitle, len(panels), now); err != nil {
+		return panels, err
+	}
+
+	dbID, err := notionFindOrCreateDatabase(ctx, pageID, token, dbTitle)
+	if err != nil {
+		return panels, err
+	}
+	if err := notionClearDatabaseRows(ctx, dbID, token); err != nil {
+		return panels, err
+	}
+	pageIDMap, err := notionWritePanelRows(ctx, dbID, panels, imagePaths, coverImage, token)
+	if err != nil {
+		return panels, err
+	}
+
+	fmt.Fprintf(os.Stderr, "[Info] 腳本已寫入 Notion DB：https://www.notion.so/%s\n", strings.ReplaceAll(dbID, "-", ""))
+	fmt.Fprintln(os.Stderr, "在 Notion 確認/編輯各幕內容後，按 Enter 繼續...")
+	if !pipelineSkipHITL {
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+	}
+
+	updatedPanels, err := notionReadPanelRows(ctx, dbID, panels, pageIDMap, token)
+	if err != nil {
+		return panels, err
+	}
+	return updatedPanels, nil
+}
+
+type notionTextItem struct {
+	PlainText string `json:"plain_text"`
+	Text      struct {
+		Content string `json:"content"`
+	} `json:"text"`
+}
+
+type notionPropertyValue struct {
+	Type     string           `json:"type"`
+	Title    []notionTextItem `json:"title,omitempty"`
+	RichText []notionTextItem `json:"rich_text,omitempty"`
+	Checkbox bool             `json:"checkbox,omitempty"`
+}
+
+type notionBlockResult struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+type notionPageResult struct {
+	ID         string                         `json:"id"`
+	Type       string                         `json:"type"`
+	Properties map[string]notionPropertyValue `json:"properties"`
+}
+
+type notionBlockChildrenResponse struct {
+	Results    []notionBlockResult `json:"results"`
+	HasMore    bool                `json:"has_more"`
+	NextCursor string              `json:"next_cursor"`
+}
+
+type notionQueryResponse struct {
+	Results    []notionPageResult `json:"results"`
+	HasMore    bool               `json:"has_more"`
+	NextCursor string             `json:"next_cursor"`
+}
+
+var notionRequiredProperties = map[string]map[string]any{
+	"幕號":       {"title": map[string]any{}},
+	"插圖":       {"rich_text": map[string]any{}},
+	"Grok 提示詞": {"rich_text": map[string]any{}},
+	"字幕文字":     {"rich_text": map[string]any{}},
+	"審核通過":     {"checkbox": map[string]any{}},
+	"備註":       {"rich_text": map[string]any{}},
+}
+
+func notionFindOrCreateDatabase(ctx context.Context, pageID string, token string, title string) (string, error) {
+	blocks, err := notionListBlockChildren(ctx, pageID, token)
+	if err != nil {
+		return "", fmt.Errorf("list Notion page children: %w", err)
+	}
+	for _, block := range blocks {
+		if block.Type != "child_database" {
+			continue
+		}
+		dbURL := "https://api.notion.com/v1/databases/" + block.ID
+		var dbInfo struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := notionDoJSON(ctx, http.MethodGet, dbURL, token, "", &dbInfo); err != nil {
+			continue
+		}
+
+		// Find any missing columns and PATCH them in rather than deleting the DB.
+		missing := map[string]any{}
+		for col, schema := range notionRequiredProperties {
+			if _, ok := dbInfo.Properties[col]; !ok {
+				missing[col] = schema
+			}
+		}
+		if len(missing) > 0 {
+			patchPayload := map[string]any{"properties": missing}
+			patchBody, _ := json.Marshal(patchPayload)
+			if err := notionDoJSON(ctx, http.MethodPatch, dbURL, token, string(patchBody), nil); err != nil {
+				fmt.Fprintf(os.Stderr, "[Warning] Notion DB schema patch: %v\n", err)
+			}
+		}
+
+		// Update the DB title to reflect the current story / date.
+		titlePayload := map[string]any{"title": notionRichTextPayload(title)}
+		titleBody, _ := json.Marshal(titlePayload)
+		_ = notionDoJSON(ctx, http.MethodPatch, dbURL, token, string(titleBody), nil)
+
+		return block.ID, nil
+	}
+
+	payload := map[string]any{
+		"parent": map[string]any{
+			"type":    "page_id",
+			"page_id": pageID,
+		},
+		"title": notionRichTextPayload(title),
+		"properties": map[string]any{
+			"幕號":       map[string]any{"title": map[string]any{}},
+			"插圖":       map[string]any{"rich_text": map[string]any{}},
+			"Grok 提示詞": map[string]any{"rich_text": map[string]any{}},
+			"字幕文字":     map[string]any{"rich_text": map[string]any{}},
+			"審核通過":     map[string]any{"checkbox": map[string]any{}},
+			"備註":       map[string]any{"rich_text": map[string]any{}},
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal Notion database payload: %w", err)
+	}
+
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := notionDoJSON(ctx, http.MethodPost, "https://api.notion.com/v1/databases", token, string(body), &resp); err != nil {
+		return "", fmt.Errorf("create Notion database: %w", err)
+	}
+	if resp.ID == "" {
+		return "", fmt.Errorf("create Notion database: empty database id")
+	}
+	return resp.ID, nil
+}
+
+func notionListBlockChildren(ctx context.Context, blockID string, token string) ([]notionBlockResult, error) {
+	cursor := ""
+	var blocks []notionBlockResult
+	for {
+		endpoint := "https://api.notion.com/v1/blocks/" + blockID + "/children"
+		if cursor != "" {
+			endpoint += "?start_cursor=" + url.QueryEscape(cursor)
+		}
+
+		var resp notionBlockChildrenResponse
+		if err := notionDoJSON(ctx, http.MethodGet, endpoint, token, "", &resp); err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, resp.Results...)
+		if !resp.HasMore || resp.NextCursor == "" {
+			break
+		}
+		cursor = resp.NextCursor
+	}
+
+	return blocks, nil
+}
+
+func notionEnsurePageHeader(ctx context.Context, pageID string, token string, dbTitle string, projectID string, total int, now time.Time) error {
+	blocks, err := notionListBlockChildren(ctx, pageID, token)
+	if err != nil {
+		return fmt.Errorf("list Notion page children for header: %w", err)
+	}
+
+	headerExists := false
+	insertAfter := ""
+	hasDatabase := false
+	for i, block := range blocks {
+		if block.Type == "child_database" {
+			hasDatabase = true
+			if i > 0 {
+				insertAfter = blocks[i-1].ID
+			}
+			break
+		}
+		if block.Type == "heading_1" {
+			headerExists = true
+			break
+		}
+	}
+	if headerExists {
+		return nil
+	}
+
+	payload := map[string]any{
+		"children": []map[string]any{
+			{
+				"type": "heading_1",
+				"heading_1": map[string]any{
+					"rich_text": notionRichTextPayload("🎬 " + dbTitle),
+				},
+			},
+			{
+				"type": "paragraph",
+				"paragraph": map[string]any{
+					"rich_text": notionRichTextPayload(fmt.Sprintf(
+						"專案：%s　總幕數：%d　建立時間：%s",
+						projectID,
+						total,
+						now.Format("2006-01-02 15:04"),
+					)),
+				},
+			},
+		},
+	}
+	if hasDatabase && insertAfter != "" {
+		payload["after"] = insertAfter
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal Notion header payload: %w", err)
+	}
+	if err := notionDoJSON(ctx, http.MethodPatch, "https://api.notion.com/v1/blocks/"+pageID+"/children", token, string(body), nil); err != nil {
+		return fmt.Errorf("create Notion page header: %w", err)
+	}
+	return nil
+}
+
+func notionClearDatabaseRows(ctx context.Context, dbID string, token string) error {
+	rows, err := notionQueryDatabase(ctx, dbID, token, nil)
+	if err != nil {
+		return fmt.Errorf("query Notion database for cleanup: %w", err)
+	}
+	for _, row := range rows {
+		endpoint := "https://api.notion.com/v1/blocks/" + row.ID
+		if err := notionDoJSON(ctx, http.MethodDelete, endpoint, token, "", nil); err != nil {
+			return fmt.Errorf("delete Notion row %s: %w", row.ID, err)
+		}
+	}
+	return nil
+}
+
+// notionWritePanelRows writes one DB row per panel and returns a map of
+// Notion page UUID (with dashes, standard format) → panel index.
+// If coverImage is non-empty, a read-only cover row is prepended (not included in the map).
+func notionWritePanelRows(ctx context.Context, dbID string, panels []domain.Panel, imagePaths []string, coverImage string, token string) (map[string]int, error) {
+	// Write cover row first (reference only, not tracked in pageIDMap)
+	if coverImage != "" {
+		coverFileID := ""
+		if fid, err := notionUploadImage(ctx, coverImage, token); err == nil {
+			coverFileID = fid
+		} else {
+			fmt.Fprintf(os.Stderr, "[Warning] Notion cover image upload: %v\n", err)
+		}
+
+		coverPayload := map[string]any{
+			"parent": map[string]any{
+				"type":        "database_id",
+				"database_id": dbID,
+			},
+			"properties": map[string]any{
+				"幕號":       map[string]any{"title": notionRichTextPayload("封面")},
+				"插圖":       map[string]any{"rich_text": notionRichTextPayload(filepath.Base(coverImage))},
+				"Grok 提示詞": map[string]any{"rich_text": notionRichTextPayload("（封面圖片，不進入 I2V）")},
+				"字幕文字":     map[string]any{"rich_text": notionRichTextPayload("")},
+				"審核通過":     map[string]any{"checkbox": true},
+			},
+		}
+		if coverFileID != "" {
+			coverPayload["cover"] = notionFileUploadPayload(coverFileID)
+		}
+
+		coverBody, err := json.Marshal(coverPayload)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[Warning] Notion cover row marshal: %v\n", err)
+		} else {
+			var coverCreated struct {
+				ID string `json:"id"`
+			}
+			if err := notionDoJSON(ctx, http.MethodPost, "https://api.notion.com/v1/pages", token, string(coverBody), &coverCreated); err != nil {
+				fmt.Fprintf(os.Stderr, "[Warning] Notion cover row creation: %v\n", err)
+			} else if coverFileID != "" && coverCreated.ID != "" {
+				imgBlock := map[string]any{
+					"children": []any{
+						map[string]any{
+							"object": "block",
+							"type":   "image",
+							"image":  notionFileUploadPayload(coverFileID),
+						},
+					},
+				}
+				imgBlockBody, _ := json.Marshal(imgBlock)
+				if err := notionDoJSON(ctx, http.MethodPatch, "https://api.notion.com/v1/blocks/"+coverCreated.ID+"/children", token, string(imgBlockBody), nil); err != nil {
+					fmt.Fprintf(os.Stderr, "[Warning] Notion cover image block: %v\n", err)
+				}
+			}
+		}
+	}
+
+	pageIDMap := make(map[string]int, len(panels))
+	for i, panel := range panels {
+		imageName := "—"
+		if i < len(imagePaths) && imagePaths[i] != "" {
+			imageName = filepath.Base(imagePaths[i])
+		}
+
+		coverFileID := ""
+		if i < len(imagePaths) && imagePaths[i] != "" {
+			if fid, err := notionUploadImage(ctx, imagePaths[i], token); err == nil {
+				coverFileID = fid
+			} else {
+				fmt.Fprintf(os.Stderr, "[Warning] Notion image upload panel %d: %v\n", i+1, err)
+			}
+		}
+
+		payload := map[string]any{
+			"parent": map[string]any{
+				"type":        "database_id",
+				"database_id": dbID,
+			},
+			"properties": map[string]any{
+				"幕號": map[string]any{
+					"title": notionRichTextPayload(fmt.Sprintf("幕 %02d", i+1)),
+				},
+				"插圖": map[string]any{
+					"rich_text": notionRichTextPayload(imageName),
+				},
+				"Grok 提示詞": map[string]any{
+					"rich_text": notionRichTextPayload(panel.Description),
+				},
+				"字幕文字": map[string]any{
+					"rich_text": notionRichTextPayload(panel.Dialogue),
+				},
+				"審核通過": map[string]any{
+					"checkbox": false,
+				},
+			},
+		}
+		if coverFileID != "" {
+			payload["cover"] = notionFileUploadPayload(coverFileID)
+		}
+
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal Notion row %d: %w", i+1, err)
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		if err := notionDoJSON(ctx, http.MethodPost, "https://api.notion.com/v1/pages", token, string(body), &created); err != nil {
+			return nil, fmt.Errorf("create Notion row %d: %w", i+1, err)
+		}
+		if created.ID != "" {
+			pageIDMap[created.ID] = i
+		}
+
+		// Add the image as an inline child block so it is visible in any DB view.
+		if coverFileID != "" && created.ID != "" {
+			imgBlock := map[string]any{
+				"children": []any{
+					map[string]any{
+						"object": "block",
+						"type":   "image",
+						"image":  notionFileUploadPayload(coverFileID),
+					},
+				},
+			}
+			imgBlockBody, _ := json.Marshal(imgBlock)
+			if err := notionDoJSON(ctx, http.MethodPatch, "https://api.notion.com/v1/blocks/"+created.ID+"/children", token, string(imgBlockBody), nil); err != nil {
+				fmt.Fprintf(os.Stderr, "[Warning] Notion image block panel %d: %v\n", i+1, err)
+			}
+		}
+	}
+	return pageIDMap, nil
+}
+
+// notionReadPanelRows reads back edited panel rows from Notion DB.
+// pageIDMap maps Notion page UUID (with dashes) → panel index for precise matching.
+func notionReadPanelRows(ctx context.Context, dbID string, panels []domain.Panel, pageIDMap map[string]int, token string) ([]domain.Panel, error) {
+	rows, err := notionQueryDatabase(ctx, dbID, token, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read Notion HITL rows: %w", err)
+	}
+
+	updatedPanels := append([]domain.Panel(nil), panels...)
+	for _, row := range rows {
+		panelIndex, ok := pageIDMap[row.ID]
+		if !ok {
+			continue
+		}
+		if value, ok := row.Properties["Grok 提示詞"]; ok {
+			updatedPanels[panelIndex].Description = notionPropertyText(value)
+		}
+		if value, ok := row.Properties["字幕文字"]; ok {
+			updatedPanels[panelIndex].Dialogue = notionPropertyText(value)
+		}
+	}
+	return updatedPanels, nil
+}
+
+func notionQueryDatabase(ctx context.Context, dbID string, token string, sorts []map[string]any) ([]notionPageResult, error) {
+	cursor := ""
+	var rows []notionPageResult
+
+	for {
+		payload := map[string]any{}
+		if len(sorts) > 0 {
+			payload["sorts"] = sorts
+		}
+		if cursor != "" {
+			payload["start_cursor"] = cursor
+		}
+
+		body := "{}"
+		if len(payload) > 0 {
+			bodyBytes, err := json.Marshal(payload)
+			if err != nil {
+				return nil, fmt.Errorf("marshal Notion query payload: %w", err)
+			}
+			body = string(bodyBytes)
+		}
+
+		var resp notionQueryResponse
+		endpoint := "https://api.notion.com/v1/databases/" + dbID + "/query"
+		if err := notionDoJSON(ctx, http.MethodPost, endpoint, token, body, &resp); err != nil {
+			return nil, err
+		}
+
+		rows = append(rows, resp.Results...)
+		if !resp.HasMore || resp.NextCursor == "" {
+			break
+		}
+		cursor = resp.NextCursor
+	}
+
+	return rows, nil
+}
+
+// notionUploadImage uploads a local image file to Notion and returns the file_upload ID.
+func notionUploadImage(ctx context.Context, imagePath string, token string) (string, error) {
+	imgBytes, err := os.ReadFile(imagePath)
+	if err != nil {
+		return "", fmt.Errorf("read image: %w", err)
+	}
+
+	ext := strings.ToLower(filepath.Ext(imagePath))
+	contentType := "image/png"
+	if ext == ".jpg" || ext == ".jpeg" {
+		contentType = "image/jpeg"
+	}
+
+	// Step 1: create upload session
+	initPayload := `{}`
+	var session struct {
+		ID        string `json:"id"`
+		UploadURL string `json:"upload_url"`
+	}
+	if err := notionDoJSON(ctx, http.MethodPost, "https://api.notion.com/v1/file_uploads", token, initPayload, &session); err != nil {
+		return "", fmt.Errorf("create file upload session: %w", err)
+	}
+
+	// Step 2: send file as multipart/form-data with explicit content type
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	partHeader := make(map[string][]string)
+	partHeader["Content-Disposition"] = []string{fmt.Sprintf(`form-data; name="file"; filename=%q`, filepath.Base(imagePath))}
+	partHeader["Content-Type"] = []string{contentType}
+	fw, err := mw.CreatePart(partHeader)
+	if err != nil {
+		return "", fmt.Errorf("create form part: %w", err)
+	}
+	if _, err := fw.Write(imgBytes); err != nil {
+		return "", fmt.Errorf("write form part: %w", err)
+	}
+	mw.Close()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, session.UploadURL, &buf)
+	if err != nil {
+		return "", fmt.Errorf("create upload request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Notion-Version", "2022-06-28")
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("upload failed status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+
+	return session.ID, nil
+}
+
+func notionFileUploadPayload(fileUploadID string) map[string]any {
+	return map[string]any{
+		"type":        "file_upload",
+		"file_upload": map[string]any{"id": fileUploadID},
+	}
+}
+
+func notionDoJSON(ctx context.Context, method string, endpoint string, token string, body string, dest any) error {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Notion-Version", "2022-06-28")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response body: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+	if dest == nil || len(respBody) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(respBody, dest); err != nil {
+		return fmt.Errorf("decode response body: %w", err)
+	}
+	return nil
+}
+
+func notionRichTextPayload(content string) []map[string]any {
+	chunks := splitNotionText(content, 2000)
+	richText := make([]map[string]any, 0, len(chunks))
+	for _, chunk := range chunks {
+		richText = append(richText, map[string]any{
+			"type": "text",
+			"text": map[string]any{
+				"content": chunk,
+			},
+		})
+	}
+	return richText
+}
+
+func splitNotionText(content string, limit int) []string {
+	if content == "" {
+		return []string{}
+	}
+	runes := []rune(content)
+	if len(runes) <= limit {
+		return []string{content}
+	}
+
+	chunks := make([]string, 0, (len(runes)+limit-1)/limit)
+	for start := 0; start < len(runes); start += limit {
+		end := start + limit
+		if end > len(runes) {
+			end = len(runes)
+		}
+		chunks = append(chunks, string(runes[start:end]))
+	}
+	return chunks
+}
+
+func notionPropertyText(value notionPropertyValue) string {
+	items := value.RichText
+	if len(items) == 0 {
+		items = value.Title
+	}
+
+	var builder strings.Builder
+	for _, item := range items {
+		text := item.PlainText
+		if text == "" {
+			text = item.Text.Content
+		}
+		builder.WriteString(text)
+	}
+	return builder.String()
 }
 
 // runReelCritic evaluates the reel video with a motion-focused Critic 2 prompt.
