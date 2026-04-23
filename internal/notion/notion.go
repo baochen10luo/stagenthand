@@ -41,10 +41,6 @@ func HITL(
 
 	dbTitle := storyTitle
 
-	if err := ensurePageHeader(ctx, pageID, token, dbTitle, storyTitle, len(panels)); err != nil {
-		return panels, err
-	}
-
 	dbID, err := findOrCreateDatabase(ctx, pageID, token, dbTitle)
 	if err != nil {
 		return panels, err
