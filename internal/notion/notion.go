@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
 )
@@ -40,10 +39,9 @@ func HITL(
 		return panels, fmt.Errorf("NOTION_GROK_PAGE_ID is empty")
 	}
 
-	now := time.Now()
-	dbTitle := fmt.Sprintf("%s · %s", storyTitle, now.Format("2006-01-02"))
+	dbTitle := storyTitle
 
-	if err := ensurePageHeader(ctx, pageID, token, dbTitle, storyTitle, len(panels), now); err != nil {
+	if err := ensurePageHeader(ctx, pageID, token, dbTitle, storyTitle, len(panels)); err != nil {
 		return panels, err
 	}
 
@@ -51,10 +49,7 @@ func HITL(
 	if err != nil {
 		return panels, err
 	}
-	if err := clearDatabaseRows(ctx, dbID, token); err != nil {
-		return panels, err
-	}
-	pageIDMap, err := writePanelRows(ctx, dbID, panels, imagePaths, coverImage, token)
+	pageIDMap, err := upsertPanelRows(ctx, dbID, panels, imagePaths, coverImage, token)
 	if err != nil {
 		return panels, err
 	}
@@ -131,13 +126,16 @@ func findOrCreateDatabase(ctx context.Context, pageID, token, title string) (str
 		}
 		dbURL := "https://api.notion.com/v1/databases/" + block.ID
 		var dbInfo struct {
+			Title     []textItem              `json:"title"`
 			Properties map[string]json.RawMessage `json:"properties"`
 		}
 		if err := doJSON(ctx, http.MethodGet, dbURL, token, "", &dbInfo); err != nil {
 			continue
 		}
+		if len(dbInfo.Title) == 0 || dbInfo.Title[0].PlainText != title {
+			continue
+		}
 
-		// PATCH any missing columns rather than deleting the DB.
 		missing := map[string]any{}
 		for col, schema := range requiredProperties {
 			if _, ok := dbInfo.Properties[col]; !ok {
@@ -150,10 +148,6 @@ func findOrCreateDatabase(ctx context.Context, pageID, token, title string) (str
 				fmt.Fprintf(os.Stderr, "[Warning] Notion DB schema patch: %v\n", err)
 			}
 		}
-
-		// Update the DB title to reflect the current story / date.
-		titleBody, _ := json.Marshal(map[string]any{"title": richTextPayload(title)})
-		_ = doJSON(ctx, http.MethodPatch, dbURL, token, string(titleBody), nil)
 
 		return block.ID, nil
 	}
@@ -184,7 +178,7 @@ func findOrCreateDatabase(ctx context.Context, pageID, token, title string) (str
 	return resp.ID, nil
 }
 
-func ensurePageHeader(ctx context.Context, pageID, token, dbTitle, storyTitle string, total int, now time.Time) error {
+func ensurePageHeader(ctx context.Context, pageID, token, dbTitle, storyTitle string, total int) error {
 	blocks, err := listBlockChildren(ctx, pageID, token)
 	if err != nil {
 		return fmt.Errorf("list Notion page children for header: %w", err)
@@ -217,8 +211,8 @@ func ensurePageHeader(ctx context.Context, pageID, token, dbTitle, storyTitle st
 				"type": "paragraph",
 				"paragraph": map[string]any{
 					"rich_text": richTextPayload(fmt.Sprintf(
-						"專案：%s　總幕數：%d　建立時間：%s",
-						storyTitle, total, now.Format("2006-01-02 15:04"),
+						"專案：%s　總幕數：%d",
+						storyTitle, total,
 					)),
 				},
 			},
@@ -246,6 +240,134 @@ func clearDatabaseRows(ctx context.Context, dbID, token string) error {
 		}
 	}
 	return nil
+}
+
+// upsertPanelRows upserts panel rows into an existing Notion database.
+// Existing rows are matched by "幕號" title and updated; new rows are created.
+// Rows not in the new panels list are preserved.
+func upsertPanelRows(ctx context.Context, dbID string, panels []domain.Panel, imagePaths []string, coverImage string, token string) (map[string]int, error) {
+	existingRows, err := queryDatabase(ctx, dbID, token, nil)
+	if err != nil {
+		return nil, fmt.Errorf("query existing rows: %w", err)
+	}
+	rowByTitle := make(map[string]string)
+	for _, row := range existingRows {
+		if title := propertyText(row.Properties["幕號"]); title != "" {
+			rowByTitle[title] = row.ID
+		}
+	}
+
+	pageIDMap := make(map[string]int)
+
+	if coverImage != "" {
+		coverFileID := ""
+		if fid, err := uploadImage(ctx, coverImage, token); err == nil {
+			coverFileID = fid
+		} else {
+			fmt.Fprintf(os.Stderr, "[Warning] Notion cover image upload: %v\n", err)
+		}
+		if existingID, ok := rowByTitle["封面"]; ok {
+			updateRow(ctx, existingID, coverImage, coverFileID, "（封面圖片，不進入 I2V）", "", token)
+		} else {
+			createCoverRow(ctx, dbID, coverImage, coverFileID, token)
+		}
+		delete(rowByTitle, "封面")
+	}
+
+	for i, panel := range panels {
+		panelTitle := fmt.Sprintf("幕 %02d", i+1)
+		imageName := "—"
+		if i < len(imagePaths) && imagePaths[i] != "" {
+			imageName = filepath.Base(imagePaths[i])
+		}
+		fileID := ""
+		if i < len(imagePaths) && imagePaths[i] != "" {
+			if fid, err := uploadImage(ctx, imagePaths[i], token); err == nil {
+				fileID = fid
+			} else {
+				fmt.Fprintf(os.Stderr, "[Warning] Notion image upload panel %d: %v\n", i+1, err)
+			}
+		}
+		if existingID, ok := rowByTitle[panelTitle]; ok {
+			updateRow(ctx, existingID, imageName, fileID, panel.Description, panel.Dialogue, token)
+			pageIDMap[existingID] = i
+			delete(rowByTitle, panelTitle)
+		} else {
+			createdID := createPanelRow(ctx, dbID, panelTitle, imageName, fileID, panel.Description, panel.Dialogue, token)
+			if createdID != "" {
+				pageIDMap[createdID] = i
+			}
+		}
+	}
+	return pageIDMap, nil
+}
+
+func updateRow(ctx context.Context, pageID, imageName string, fileID, description, dialogue, token string) {
+	payload := map[string]any{
+		"properties": map[string]any{
+			"插圖":       map[string]any{"rich_text": richTextPayload(imageName)},
+			"Grok 提示詞": map[string]any{"rich_text": richTextPayload(description)},
+			"字幕文字":     map[string]any{"rich_text": richTextPayload(dialogue)},
+		},
+	}
+	if fileID != "" {
+		payload["cover"] = fileUploadPayload(fileID)
+	}
+	body, _ := json.Marshal(payload)
+	_ = doJSON(ctx, http.MethodPatch, "https://api.notion.com/v1/pages/"+pageID, token, string(body), nil)
+}
+
+func createCoverRow(ctx context.Context, dbID, coverImage string, coverFileID string, token string) {
+	payload := map[string]any{
+		"parent": map[string]any{"type": "database_id", "database_id": dbID},
+		"properties": map[string]any{
+			"幕號":       map[string]any{"title": richTextPayload("封面")},
+			"插圖":       map[string]any{"rich_text": richTextPayload(filepath.Base(coverImage))},
+			"Grok 提示詞": map[string]any{"rich_text": richTextPayload("（封面圖片，不進入 I2V）")},
+			"字幕文字":     map[string]any{"rich_text": richTextPayload("")},
+			"審核通過":     map[string]any{"checkbox": true},
+		},
+	}
+	if coverFileID != "" {
+		payload["cover"] = fileUploadPayload(coverFileID)
+	}
+	body, _ := json.Marshal(payload)
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := doJSON(ctx, http.MethodPost, "https://api.notion.com/v1/pages", token, string(body), &created); err != nil {
+		fmt.Fprintf(os.Stderr, "[Warning] Notion cover row creation: %v\n", err)
+	} else if coverFileID != "" && created.ID != "" {
+		addImageBlock(ctx, created.ID, coverFileID, token, "cover")
+	}
+}
+
+func createPanelRow(ctx context.Context, dbID, panelTitle, imageName string, fileID string, description, dialogue, token string) string {
+	payload := map[string]any{
+		"parent": map[string]any{"type": "database_id", "database_id": dbID},
+		"properties": map[string]any{
+			"幕號":       map[string]any{"title": richTextPayload(panelTitle)},
+			"插圖":       map[string]any{"rich_text": richTextPayload(imageName)},
+			"Grok 提示詞": map[string]any{"rich_text": richTextPayload(description)},
+			"字幕文字":     map[string]any{"rich_text": richTextPayload(dialogue)},
+			"審核通過":     map[string]any{"checkbox": false},
+		},
+	}
+	if fileID != "" {
+		payload["cover"] = fileUploadPayload(fileID)
+	}
+	body, _ := json.Marshal(payload)
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := doJSON(ctx, http.MethodPost, "https://api.notion.com/v1/pages", token, string(body), &created); err != nil {
+		fmt.Fprintf(os.Stderr, "[Warning] Notion row creation %s: %v\n", panelTitle, err)
+		return ""
+	}
+	if created.ID != "" && fileID != "" {
+		addImageBlock(ctx, created.ID, fileID, token, panelTitle)
+	}
+	return created.ID
 }
 
 // writePanelRows writes one DB row per panel and returns a map of
