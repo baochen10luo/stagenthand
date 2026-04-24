@@ -286,8 +286,29 @@ export const videoCommand = cli({
             // Try Node.js download first (avoids CORS issues)
             try {
                 await downloadUrl(videoUrl, filePath);
-                return [{ file: filePath }];
+                if (require('fs').existsSync(filePath) && require('fs').statSync(filePath).size > 1000) {
+                    return [{ file: filePath }];
+                }
             } catch(e) { /* fall through to browser fetch */ }
+
+            // Try browser fetch with session cookies (for authenticated URLs like assets.grok.com)
+            try {
+                b64Data = await page.evaluate(async (url) => {
+                    try {
+                        const resp = await fetch(url, { credentials: 'include' });
+                        if (!resp.ok) return null;
+                        const buf = await resp.arrayBuffer();
+                        const bytes = new Uint8Array(buf);
+                        let binary = '';
+                        for (let i = 0; i < bytes.byteLength; i += 1024) {
+                            const chunk = bytes.subarray(i, i + 1024);
+                            binary += String.fromCharCode.apply(null, chunk);
+                        }
+                        return 'data:video/mp4;base64,' + btoa(binary);
+                    } catch(e) { return null; }
+                }, videoUrl);
+                if (b64Data) return [{ file: '[INFO] downloaded via browser fetch' }];
+            } catch(e) { /* fall through */ }
         }
 
         if (videoUrl) {
