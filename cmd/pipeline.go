@@ -647,12 +647,27 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 			break
 		}
 		if panelErr != nil {
-			// Write failure log
-			logPath := filepath.Join(shotsDir, fmt.Sprintf("shot_%03d_error.log", i+1))
-			logContent := fmt.Sprintf("panel %d failed after %d attempts\nprompt: %s\n\n%s\n",
-				i+1, maxAttempts, prompt, strings.Join(attemptLogs, "\n---\n"))
-			_ = os.WriteFile(logPath, []byte(logContent), 0644)
-			fmt.Fprintf(os.Stderr, "[Error] Grok video panel %d failed — log written to %s\n", i+1, logPath)
+			// Write structured failure log (JSON)
+			logPath := filepath.Join(shotsDir, fmt.Sprintf("shot_%03d_error.json", i+1))
+			errLog := map[string]any{
+				"panel":      i + 1,
+				"status":     "failed",
+				"reason":     classifyError(panelErr),
+				"attempts":   maxAttempts,
+				"last_error": panelErr.Error(),
+				"prompt":     prompt,
+				"timestamp":  time.Now().Format(time.RFC3339),
+				"logs":        attemptLogs,
+			}
+			if logBytes, jsonErr := json.MarshalIndent(errLog, "", "  "); jsonErr == nil {
+				_ = os.WriteFile(logPath, logBytes, 0644)
+			} else {
+				// Fallback to text
+				logContent := fmt.Sprintf("panel %d failed after %d attempts\nprompt: %s\n\n%s\n",
+					i+1, maxAttempts, prompt, strings.Join(attemptLogs, "\n---\n"))
+				_ = os.WriteFile(logPath, []byte(logContent), 0644)
+			}
+			fmt.Fprintf(os.Stderr, "[Error] Grok video panel %d failed (%s) — log written to %s\n", i+1, classifyError(panelErr), logPath)
 			return "", fmt.Errorf("grok video panel %d failed after %d attempts: %w", i+1, maxAttempts, panelErr)
 		}
 
@@ -748,6 +763,28 @@ func naturalSortImages(paths []string) {
 		}
 		return paths[i] < paths[j]
 	})
+}
+
+// classifyError categorizes errors for structured logging
+func classifyError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "TIMEOUT") || strings.Contains(msg, "timeout"):
+		return "TIMEOUT"
+	case strings.Contains(msg, "exit error"):
+		return "CLI_ERROR"
+	case strings.Contains(msg, "adapter error"):
+		return "ADAPTER_ERROR"
+	case strings.Contains(msg, "connection") || strings.Contains(msg, "network"):
+		return "NETWORK_ERROR"
+	case strings.Contains(msg, "not found") || strings.Contains(msg, "404"):
+		return "NOT_FOUND"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 // resolveStoryTitle looks for a .txt file in imageDir and uses its name
