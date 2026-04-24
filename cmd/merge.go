@@ -82,9 +82,13 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no numbered shot files found")
 	}
 
-	// Create concat list
+	// Create concat list (format: file '/path/to/file.mp4')
+	var concatLines []string
+	for _, f := range sortedShotFiles {
+		concatLines = append(concatLines, fmt.Sprintf("file '%s'", f))
+	}
+	concatContent := strings.Join(concatLines, "\n") + "\n"
 	concatFile := filepath.Join(shotsDir, "concat_list.txt")
-	concatContent := strings.Join(sortedShotFiles, "\n") + "\n"
 	if err := os.WriteFile(concatFile, []byte(concatContent), 0644); err != nil {
 		return fmt.Errorf("write concat list: %w", err)
 	}
