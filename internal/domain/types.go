@@ -241,3 +241,12 @@ type RemotionProps struct {
 	Width      int         `json:"width"`  // default 1024
 	Height     int         `json:"height"` // default 576
 }
+
+// StoryboardManifest is the intermediate artifact produced after image generation,
+// before Notion upload. Panels carry local image paths; audio will be regenerated
+// from Notion-edited dialogue at rough-cut time.
+type StoryboardManifest struct {
+	ProjectID  string  `json:"project_id"`
+	StoryTitle string  `json:"story_title"`
+	Panels     []Panel `json:"panels"`
+}

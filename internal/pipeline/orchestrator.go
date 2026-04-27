@@ -355,6 +355,16 @@ func applyDynamicDuration(panels []domain.Panel) []domain.Panel {
 // A 0.5 s tail buffer is added after the last spoken word.
 // Panels without an AudioURL are left untouched.
 // If ffprobe is unavailable the panel duration is left unchanged.
+// ApplyRealAudioDuration is the exported entry point used by rough-cut and other commands.
+func ApplyRealAudioDuration(panels []domain.Panel) []domain.Panel {
+	return applyRealAudioDuration(panels)
+}
+
+// ApplySubtitleTimings is the exported entry point used by rough-cut and other commands.
+func ApplySubtitleTimings(panels []domain.Panel) []domain.Panel {
+	return applySubtitleTimings(panels)
+}
+
 func applyRealAudioDuration(panels []domain.Panel) []domain.Panel {
 	const tailBuffer = 0.5
 	for i, p := range panels {
