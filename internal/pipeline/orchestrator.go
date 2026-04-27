@@ -100,6 +100,9 @@ type PipelineResult struct {
 	Storyboard domain.Storyboard
 	Panels     []domain.Panel
 	Props      domain.RemotionProps
+	// Manifest is populated after image generation (before audio) and captures
+	// the post-image panel state with local image paths. Nil in dry-run mode.
+	Manifest *domain.StoryboardManifest
 }
 
 func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResult, error) {
@@ -110,7 +113,7 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 	// 1. Detection: Is this already a flat list of panels (RemotionProps)?
 	var props domain.RemotionProps
 	if jsonUnmarshal(inputData, &props) == nil && len(props.Panels) > 0 {
-		return o.executeFromPanels(ctx, props.ProjectID, props.Panels, props.BGMURL, props.Directives)
+		return o.executeFromPanels(ctx, props.ProjectID, props.Title, props.Panels, props.BGMURL, props.Directives)
 	}
 
 	// 2. Normal flow: Resolve to a Storyboard
@@ -152,12 +155,18 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 		}
 	}
 
-	return o.executeFromPanels(ctx, storyboard.ProjectID, panels, storyboard.BGMURL, storyboard.Directives)
+	return o.executeFromPanels(ctx, storyboard.ProjectID, "", panels, storyboard.BGMURL, storyboard.Directives)
 }
 
 // executeFromPanels runs the asset generation stages (Images, Audio, Music) from a flat panel list.
-func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, panels []domain.Panel, bgmURL string, directives *domain.Directives) (*PipelineResult, error) {
+// storyTitle is used for the manifest; if empty, projectID is used as fallback.
+func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, storyTitle string, panels []domain.Panel, bgmURL string, directives *domain.Directives) (*PipelineResult, error) {
 	var err error
+
+	// Derive storyTitle fallback
+	if storyTitle == "" {
+		storyTitle = projectID
+	}
 
 	// Prepend StylePrompt to enforce visual consistency across all panels
 	if directives != nil && directives.StylePrompt != "" {
@@ -175,7 +184,6 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	// display for single-line panels (Strategy D).
 	panels = applySubtitleTimings(panels)
 
-
 	// 3. Generate images for panels
 	if !o.deps.DryRun {
 		// Target directory for images: projects/<project_id>/images/
@@ -191,6 +199,24 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 		return nil, err
 	}
 
+	// Build the storyboard manifest after image generation (before audio).
+	// This captures the post-image panel state with local image paths so that
+	// rough-cut and notion-push commands can consume it without re-running images.
+	var manifest *domain.StoryboardManifest
+	if !o.deps.DryRun {
+		// Strip AudioURL (not generated yet) so rough-cut regenerates TTS from Notion-edited dialogue.
+		manifestPanels := make([]domain.Panel, len(panels))
+		for i, p := range panels {
+			p.AudioURL = ""
+			manifestPanels[i] = p
+		}
+		manifest = &domain.StoryboardManifest{
+			ProjectID:  projectID,
+			StoryTitle: storyTitle,
+			Panels:     manifestPanels,
+		}
+	}
+
 	// 4. Generate audio (TTS) for panels
 	if !o.deps.DryRun && o.deps.Audio != nil {
 		audioDir := fmt.Sprintf("projects/%s/audio", projectID)
@@ -199,14 +225,14 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 			return nil, fmt.Errorf("audio stage failed: %w", err)
 		}
 		// Correct DurationSec to match real audio length, then re-compute subtitle timings.
-		panels = applyRealAudioDuration(panels)
+		panels = extendDurationIfAudioLonger(panels)
 		panels = applySubtitleTimings(panels)
 	}
 
 	// 5. Generate BGM
 	if !o.deps.DryRun && o.deps.Music != nil {
 		musicDir := fmt.Sprintf("projects/%s/audio", projectID)
-		
+
 		bgmTags := "cinematic"
 		if directives != nil && directives.BGMTags != "" {
 			bgmTags = directives.BGMTags
@@ -223,6 +249,7 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	return &PipelineResult{
 		Storyboard: domain.Storyboard{ProjectID: projectID, BGMURL: bgmURL, Directives: directives}, // Minimal backfill
 		Panels:     panels,
+		Manifest:   manifest,
 	}, nil
 }
 
@@ -350,20 +377,16 @@ func applyDynamicDuration(panels []domain.Panel) []domain.Panel {
 	return panels
 }
 
-// applyRealAudioDuration reads actual audio file durations via ffprobe and updates
-// DurationSec so the panel is never shorter than the spoken audio.
-// A 0.5 s tail buffer is added after the last spoken word.
-// Panels without an AudioURL are left untouched.
-// If ffprobe is unavailable the panel duration is left unchanged.
 // ApplyRealAudioDuration is the exported entry point used by rough-cut and other commands.
+// It extends panel duration only if the real audio is longer than the current estimate.
 func ApplyRealAudioDuration(panels []domain.Panel) []domain.Panel {
-	return applyRealAudioDuration(panels)
+	return extendDurationIfAudioLonger(panels)
 }
 
-// SetDurationFromAudio sets each panel's DurationSec directly to the real audio length
-// plus a tail buffer — overriding any prior estimate. Used by rough-cut where the
-// audio is the single source of truth for timing.
-func SetDurationFromAudio(panels []domain.Panel) []domain.Panel {
+// OverrideDurationFromAudio sets each panel's DurationSec directly to the real audio length
+// plus a tail buffer — overriding any prior estimate, even if the original was longer.
+// Used by rough-cut where the audio is the single source of truth for timing.
+func OverrideDurationFromAudio(panels []domain.Panel) []domain.Panel {
 	const tailBuffer = 0.5
 	for i, p := range panels {
 		if p.AudioURL == "" {
@@ -371,7 +394,7 @@ func SetDurationFromAudio(panels []domain.Panel) []domain.Panel {
 		}
 		dur, err := mp3Duration(p.AudioURL)
 		if err != nil {
-			slog.Warn("SetDurationFromAudio: could not read audio duration", "path", p.AudioURL, "error", err)
+			slog.Warn("OverrideDurationFromAudio: could not read audio duration", "path", p.AudioURL, "error", err)
 			continue
 		}
 		panels[i].DurationSec = dur + tailBuffer
@@ -384,7 +407,12 @@ func ApplySubtitleTimings(panels []domain.Panel) []domain.Panel {
 	return applySubtitleTimings(panels)
 }
 
-func applyRealAudioDuration(panels []domain.Panel) []domain.Panel {
+// extendDurationIfAudioLonger reads actual audio file durations via ffprobe and extends
+// DurationSec only if the real audio is longer than the current estimate.
+// A 0.5 s tail buffer is added after the last spoken word.
+// Panels without an AudioURL are left untouched.
+// If ffprobe is unavailable the panel duration is left unchanged.
+func extendDurationIfAudioLonger(panels []domain.Panel) []domain.Panel {
 	const tailBuffer = 0.5
 	for i, p := range panels {
 		if p.AudioURL == "" {
@@ -392,12 +420,12 @@ func applyRealAudioDuration(panels []domain.Panel) []domain.Panel {
 		}
 		dur, err := mp3Duration(p.AudioURL)
 		if err != nil {
-			slog.Warn("applyRealAudioDuration: could not read audio duration", "path", p.AudioURL, "error", err)
+			slog.Warn("extendDurationIfAudioLonger: could not read audio duration", "path", p.AudioURL, "error", err)
 			continue
 		}
 		required := dur + tailBuffer
 		if panels[i].DurationSec < required {
-			slog.Info("applyRealAudioDuration: extending panel duration",
+			slog.Info("extendDurationIfAudioLonger: extending panel duration",
 				"scene", p.SceneNumber, "panel", p.PanelNumber,
 				"old", panels[i].DurationSec, "new", required)
 			panels[i].DurationSec = required

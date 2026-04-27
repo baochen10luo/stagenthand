@@ -26,6 +26,9 @@ var mergeCmd = &cobra.Command{
 	Short: "Merge I2V shots into final video",
 	Long: `Merge all shot_*.mp4 files in a project into a single video.
 
+Requires the grok_browser stage to have run first (pipeline --video-backend grok_browser --i2v),
+which produces the shot_*.mp4 files in the shots/ subdirectory of the project output dir.
+
 Examples:
   shand merge --output-dir ~/.shand/projects/bloodline_of_gangland
   shand merge -o ~/.shand/projects/xxx/output.mp4`,

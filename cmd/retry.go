@@ -28,6 +28,9 @@ var retryCmd = &cobra.Command{
 	Short: "Retry failed I2V shots",
 	Long: `Retry specific failed panels from a previous pipeline run.
 
+Requires the grok_browser stage to have run first (pipeline --video-backend grok_browser --i2v).
+This command marks specified panels for retry and provides the command to regenerate them.
+
 Examples:
   shand retry --output-dir ~/.shand/projects/bloodline_of_gangland --panels 1,5,9
   shand retry -o ~/.shand/projects/xxx --panels 3`,

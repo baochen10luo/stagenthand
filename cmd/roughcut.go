@@ -3,8 +3,10 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/baochen10luo/stagenthand/internal/audio"
 	"github.com/baochen10luo/stagenthand/internal/domain"
@@ -72,6 +74,12 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 		}
 
 		if !dryRun {
+			if err := validateImagePaths(panels); err != nil {
+				return stageError("rough-cut", "missing_images", err.Error())
+			}
+		}
+
+		if !dryRun {
 			// ── 3. Generate TTS audio ────────────────────────────────────────
 			shandHome, _ := os.UserHomeDir()
 			shandHome = filepath.Join(shandHome, ".shand")
@@ -89,7 +97,7 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 			}
 
 			// ── 4. Set duration = real audio length (audio is the only timing source) ──
-			panels = pipeline.SetDurationFromAudio(panels)
+			panels = pipeline.OverrideDurationFromAudio(panels)
 		}
 
 		panels = pipeline.ApplySubtitleTimings(panels)
@@ -140,12 +148,15 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 // mergeNotionEdits overlays Notion-edited dialogue/description onto manifest panels.
 // Matching is by panel order (幕 01 → panels[0], 幕 02 → panels[1], …).
 // Image paths are always taken from the manifest to ensure local files are used.
+// When Notion has fewer rows than the manifest, a warning is logged for the leftover panels.
 func mergeNotionEdits(manifest []domain.Panel, notion []domain.Panel) []domain.Panel {
 	result := make([]domain.Panel, len(manifest))
 	copy(result, manifest)
 	for i := range result {
 		if i >= len(notion) {
-			break
+			slog.Warn("mergeNotionEdits: Notion has fewer rows than manifest; leftover panel uses stale dialogue",
+				"panel_index", i, "manifest_panels", len(manifest), "notion_panels", len(notion))
+			continue
 		}
 		if notion[i].Dialogue != "" {
 			result[i].Dialogue = notion[i].Dialogue
@@ -156,6 +167,24 @@ func mergeNotionEdits(manifest []domain.Panel, notion []domain.Panel) []domain.P
 		// Always keep manifest's ImageURL (local path).
 	}
 	return result
+}
+
+// validateImagePaths checks that every panel with a non-empty ImageURL points to an
+// existing file. Returns nil if all paths exist. Returns an error listing missing files.
+func validateImagePaths(panels []domain.Panel) error {
+	var missing []string
+	for _, p := range panels {
+		if p.ImageURL == "" {
+			continue
+		}
+		if _, err := os.Stat(p.ImageURL); os.IsNotExist(err) {
+			missing = append(missing, p.ImageURL)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing image files: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func init() {

@@ -20,7 +20,6 @@ import (
 	"github.com/baochen10luo/stagenthand/internal/domain"
 	"github.com/baochen10luo/stagenthand/internal/image"
 	"github.com/baochen10luo/stagenthand/internal/llm"
-	"github.com/baochen10luo/stagenthand/internal/notion"
 	"github.com/baochen10luo/stagenthand/internal/pipeline"
 	"github.com/baochen10luo/stagenthand/internal/remotion"
 	"github.com/baochen10luo/stagenthand/internal/render"
@@ -66,6 +65,12 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	inputData, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return stageError("pipeline", "stdin_read_error", fmt.Sprintf("reading stdin: %v", err))
+	}
+
+	// Validate --i2v flag: requires --video-backend grok_browser
+	if pipelineI2V && resolveVideoBackend() != "grok_browser" {
+		return stageError("pipeline", "invalid_flag",
+			"--i2v requires --video-backend grok_browser")
 	}
 
 	// Build LLM client
@@ -223,19 +228,15 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if !dryRun {
-		notionPageID := os.Getenv("NOTION_GROK_PAGE_ID")
-		if notionPageID == "" {
-			notionPageID = "3485ee2ef54d8034bb8ceabf27c3f29c"
-		}
-		notionToken := os.Getenv("NOTION_API_KEY")
-		i2vImagesBefore := collectPipelineI2VImages()
-		coverImage := collectCoverImage()
-		updatedPanels, hitlErr := notionDBHITL(cmd.Context(), result.Panels, i2vImagesBefore, coverImage, result.Storyboard.ProjectID, notionPageID, notionToken)
-		if hitlErr != nil {
-			fmt.Fprintf(os.Stderr, "[Warning] Notion HITL skipped: %v\n", hitlErr)
-		} else {
-			result.Panels = updatedPanels
+	// Write storyboard manifest (post-image, pre-audio snapshot) if the pipeline produced one.
+	if result.Manifest != nil && pipelineOutputDir != "" {
+		if err := os.MkdirAll(pipelineOutputDir, 0755); err == nil {
+			manifestPath := filepath.Join(pipelineOutputDir, "storyboard_manifest.json")
+			if manifestBytes, marshalErr := json.MarshalIndent(result.Manifest, "", "  "); marshalErr == nil {
+				if writeErr := os.WriteFile(manifestPath, manifestBytes, 0644); writeErr == nil {
+					fmt.Fprintf(os.Stderr, "[Info] 分鏡稿已儲存。執行以下指令推送 Notion 進行審核：\n  shand notion-push --output-dir %s\n", pipelineOutputDir)
+				}
+			}
 		}
 	}
 
@@ -820,11 +821,6 @@ func collectCoverImage() string {
 		return ""
 	}
 	return imagePaths[0]
-}
-
-func notionDBHITL(ctx context.Context, panels []domain.Panel, imagePaths []string, coverImage string, projectID string, pageID string, token string) ([]domain.Panel, error) {
-	storyTitle := resolveStoryTitle(pipelineImageDir, projectID)
-	return notion.HITL(ctx, panels, imagePaths, coverImage, storyTitle, pageID, token, pipelineSkipHITL)
 }
 
 // runReelCritic evaluates the reel video with a motion-focused Critic 2 prompt.

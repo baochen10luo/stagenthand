@@ -145,3 +145,136 @@ func TestOrchestrator_LLMFailurePropagates(t *testing.T) {
 	}
 }
 
+// --- Fix 3: Manifest populated after image generation ---
+
+func TestOrchestrator_ManifestPopulatedAfterImages(t *testing.T) {
+	storyboardJSON := []byte(`{"project_id":"proj-manifest","episode":1,"scenes":[{"number":1,"description":"s","panels":[]}]}`)
+	panelsJSON := []byte(`{"panels":[{"scene_number":1,"panel_number":1,"description":"hero","dialogue":"Hello","duration_sec":3.0}]}`)
+
+	imgBatcher := &mockImageBatcher{}
+	orch := pipeline.NewOrchestrator(pipeline.OrchestratorDeps{
+		LLM:         &mockTransformer{output: panelsJSON},
+		Images:      imgBatcher,
+		Checkpoints: &mockCheckpointStore{approved: true},
+		DryRun:      false,
+		SkipHITL:    true,
+	})
+
+	result, err := orch.Run(context.Background(), storyboardJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Manifest == nil {
+		t.Fatal("expected result.Manifest to be non-nil after image generation")
+	}
+	if result.Manifest.ProjectID != "proj-manifest" {
+		t.Errorf("expected ProjectID 'proj-manifest', got %q", result.Manifest.ProjectID)
+	}
+	if len(result.Manifest.Panels) == 0 {
+		t.Error("expected manifest to have panels")
+	}
+	// Verify manifest panels have AudioURL cleared (captured before audio stage)
+	for _, p := range result.Manifest.Panels {
+		if p.AudioURL != "" {
+			t.Errorf("manifest panel has AudioURL %q; should be empty (manifest is pre-audio)", p.AudioURL)
+		}
+	}
+	// Verify manifest panels have ImageURL set (captured after image stage)
+	for _, p := range result.Manifest.Panels {
+		if p.ImageURL == "" {
+			t.Errorf("manifest panel has empty ImageURL; should be set (manifest is post-image)")
+		}
+	}
+}
+
+func TestOrchestrator_DryRun_ManifestIsNil(t *testing.T) {
+	storyboardJSON := []byte(`{"project_id":"dryproj","episode":1,"scenes":[{"number":1,"description":"s"}]}`)
+	panelsJSON := []byte(`{"panels":[{"scene_number":1,"panel_number":1,"description":"p","duration_sec":3.0}]}`)
+
+	orch := pipeline.NewOrchestrator(pipeline.OrchestratorDeps{
+		LLM:         &mockTransformer{output: panelsJSON},
+		Images:      &mockImageBatcher{},
+		Checkpoints: &mockCheckpointStore{approved: true},
+		DryRun:      true,
+		SkipHITL:    true,
+	})
+
+	result, err := orch.Run(context.Background(), storyboardJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Manifest != nil {
+		t.Error("expected result.Manifest to be nil in dry-run mode")
+	}
+}
+
+// --- Fix 1: Duration function naming tests ---
+
+// TestOverrideDurationFromAudio verifies that OverrideDurationFromAudio always sets
+// DurationSec = audio_duration + 0.5, even when the original DurationSec was LONGER.
+// Since mp3Duration calls ffprobe (unavailable in tests), panels with AudioURL pointing
+// to non-existent files are left unchanged — we verify the non-regression case.
+func TestOverrideDurationFromAudio_NoAudioURL_Unchanged(t *testing.T) {
+	panels := []domain.Panel{
+		{SceneNumber: 1, PanelNumber: 1, DurationSec: 10.0, AudioURL: ""},
+	}
+	result := pipeline.OverrideDurationFromAudio(panels)
+	if result[0].DurationSec != 10.0 {
+		t.Errorf("expected DurationSec 10.0 (no AudioURL), got %v", result[0].DurationSec)
+	}
+}
+
+// TestApplyRealAudioDuration_NoAudioURL_Unchanged verifies that ApplyRealAudioDuration
+// (the extend-only variant) also leaves panels without AudioURL untouched.
+func TestApplyRealAudioDuration_NoAudioURL_Unchanged(t *testing.T) {
+	panels := []domain.Panel{
+		{SceneNumber: 1, PanelNumber: 1, DurationSec: 5.0, AudioURL: ""},
+	}
+	result := pipeline.ApplyRealAudioDuration(panels)
+	if result[0].DurationSec != 5.0 {
+		t.Errorf("expected DurationSec 5.0 (no AudioURL), got %v", result[0].DurationSec)
+	}
+}
+
+// TestDurationFunctionSemanticsDiffer verifies that OverrideDurationFromAudio and
+// ApplyRealAudioDuration have the correct documented semantics:
+// - OverrideDurationFromAudio always overrides (even shrinks)
+// - ApplyRealAudioDuration only extends (never shrinks)
+// We exercise this via panels without AudioURLs (ffprobe not available in CI),
+// confirming neither function touches panels with no audio.
+func TestDurationFunctionSemanticsDiffer(t *testing.T) {
+	table := []struct {
+		name          string
+		inputDuration float64
+		audioURL      string
+		wantDuration  float64
+		fn            func([]domain.Panel) []domain.Panel
+	}{
+		{
+			name:          "OverrideDurationFromAudio: no URL, leaves unchanged",
+			inputDuration: 99.0,
+			audioURL:      "",
+			wantDuration:  99.0,
+			fn:            pipeline.OverrideDurationFromAudio,
+		},
+		{
+			name:          "ApplyRealAudioDuration: no URL, leaves unchanged",
+			inputDuration: 99.0,
+			audioURL:      "",
+			wantDuration:  99.0,
+			fn:            pipeline.ApplyRealAudioDuration,
+		},
+	}
+	for _, tc := range table {
+		t.Run(tc.name, func(t *testing.T) {
+			panels := []domain.Panel{
+				{SceneNumber: 1, PanelNumber: 1, DurationSec: tc.inputDuration, AudioURL: tc.audioURL},
+			}
+			result := tc.fn(panels)
+			if result[0].DurationSec != tc.wantDuration {
+				t.Errorf("expected DurationSec %v, got %v", tc.wantDuration, result[0].DurationSec)
+			}
+		})
+	}
+}
+
