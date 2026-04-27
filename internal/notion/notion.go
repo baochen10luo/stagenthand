@@ -50,7 +50,6 @@ func HITL(
 		return panels, err
 	}
 
-	fmt.Fprintf(os.Stderr, "[Info] 腳本已寫入 Notion DB：https://www.notion.so/%s\n", strings.ReplaceAll(dbID, "-", ""))
 	if skipWait {
 		fmt.Fprintln(os.Stderr, "[Info] 分鏡稿已推送，可前往 Notion 審核編輯")
 	} else {
