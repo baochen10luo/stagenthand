@@ -213,8 +213,14 @@ Output JSON MUST follow this schema:
 	PromptStoryboardToPanels = `You are a visual panel designer and cinematographer. Convert the input storyboard JSON into a detailed panel-by-panel generation JSON.
 Target total video length: approximately 30–50 seconds. Use 4–7 panels maximum.
 Each panel's 'duration_sec' should reflect the time needed to naturally speak the dialogue aloud PLUS viewer breathing time. Estimate ~0.12 seconds per character. Keep individual dialogue short and punchy — no more than 30 words per panel.
-CRITICAL: Every panel MUST have a 'dialogue' field. If the character is not speaking, use a VoiceOver (VO) to narrate the emotion, sacrifice, or plot context so the audience understands what is happening.
+CRITICAL: Every panel MUST have a 'dialogue' field. If no character is speaking aloud, write a concise narration line.
 Each panel should have at most one primary speaker. Split multi-speaker exchanges into separate panels.
+
+SPEAKER RULES (strictly enforced):
+- Narration / voice-over: use speaker: "" (empty string). NEVER use "旁白", "VO", "narrator", or any other label.
+- Character dialogue: use the character's actual name only when they speak aloud to another person.
+- When in doubt, use speaker: "" (narration is far more common in memoir/documentary stories).
+
 Output JSON MUST follow this schema:
 {
   "project_id": "...",
@@ -226,7 +232,8 @@ Output JSON MUST follow this schema:
       "description": "...",
       "dialogue": "...",
       "dialogue_lines": [
-        {"speaker": "角色名", "text": "對白內容", "emotion": "neutral"}
+        {"speaker": "", "text": "旁白內容"},
+        {"speaker": "角色名", "text": "對白內容"}
       ],
       "character_refs": [],
       "duration_sec": 4.0,

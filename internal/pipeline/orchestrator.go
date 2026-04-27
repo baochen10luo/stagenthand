@@ -175,6 +175,9 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 		}
 	}
 
+	// Normalize DialogueLine speakers: collapse "旁白", "VO", "narrator" etc → "".
+	panels = normalizePanelSpeakers(panels)
+
 	// Apply dynamic duration: ensure each panel is long enough for its dialogue
 	// plus an inversely-proportional breathing buffer for the viewer.
 	panels = applyDynamicDuration(panels)
@@ -511,4 +514,22 @@ func calcSubtitleTimings(lines []domain.DialogueLine, totalDuration float64) []d
 // isWhitespaceRune reports whether r is a Unicode whitespace character.
 func isWhitespaceRune(r rune) bool {
 	return strings.TrimSpace(string(r)) == ""
+}
+
+// normalizePanelSpeakers collapses known narrator labels ("旁白", "VO", etc.) to ""
+// across all DialogueLines in every panel. Called immediately after LLM generation
+// so downstream code (Notion, TTS routing, subtitles) sees consistent speaker values.
+func normalizePanelSpeakers(panels []domain.Panel) []domain.Panel {
+	narratorLabels := map[string]bool{
+		"旁白": true, "narrator": true, "vo": true, "(vo)": true,
+	}
+	for i := range panels {
+		for j := range panels[i].DialogueLines {
+			s := strings.ToLower(strings.TrimSpace(panels[i].DialogueLines[j].Speaker))
+			if narratorLabels[s] || strings.HasPrefix(s, "旁白") || strings.HasPrefix(s, "vo ") {
+				panels[i].DialogueLines[j].Speaker = ""
+			}
+		}
+	}
+	return panels
 }

@@ -106,8 +106,46 @@ var requiredProperties = map[string]map[string]any{
 	"插圖":       {"rich_text": map[string]any{}},
 	"Grok 提示詞": {"rich_text": map[string]any{}},
 	"字幕文字":     {"rich_text": map[string]any{}},
+	"類型":       {"select": map[string]any{}},
+	"說話者":      {"rich_text": map[string]any{}},
 	"審核通過":     {"checkbox": map[string]any{}},
 	"備註":       {"rich_text": map[string]any{}},
+}
+
+// normalizeSpeaker converts known narrator/VO labels to "" (empty = narrator/旁白).
+// LLMs sometimes produce "旁白", "VO", "narrator" etc; this collapses them all.
+func normalizeSpeaker(s string) string {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" || t == "旁白" || t == "narrator" || t == "vo" || t == "(vo)" {
+		return ""
+	}
+	if strings.HasPrefix(t, "旁白") || strings.HasPrefix(t, "vo ") || strings.HasPrefix(t, "(vo)") {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+// panelLineType returns "旁白" when all dialogue lines are narration, else "對話".
+func panelLineType(panel domain.Panel) string {
+	for _, dl := range panel.DialogueLines {
+		if normalizeSpeaker(dl.Speaker) != "" {
+			return "對話"
+		}
+	}
+	return "旁白"
+}
+
+// panelSpeakers returns a comma-joined list of unique non-narrator speakers.
+func panelSpeakers(panel domain.Panel) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, dl := range panel.DialogueLines {
+		if s := normalizeSpeaker(dl.Speaker); s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, "、")
 }
 
 // ── database management ───────────────────────────────────────────────────────
@@ -265,7 +303,7 @@ func upsertPanelRows(ctx context.Context, dbID string, panels []domain.Panel, im
 			fmt.Fprintf(os.Stderr, "[Warning] Notion cover image upload: %v\n", err)
 		}
 		if existingID, ok := rowByTitle["封面"]; ok {
-			updateRow(ctx, existingID, coverImage, coverFileID, "（封面圖片，不進入 I2V）", "", token)
+			updateRow(ctx, existingID, coverImage, coverFileID, "（封面圖片，不進入 I2V）", "", "旁白", "", token)
 		} else {
 			createCoverRow(ctx, dbID, coverImage, coverFileID, token)
 		}
@@ -286,12 +324,14 @@ func upsertPanelRows(ctx context.Context, dbID string, panels []domain.Panel, im
 				fmt.Fprintf(os.Stderr, "[Warning] Notion image upload panel %d: %v\n", i+1, err)
 			}
 		}
+		lt := panelLineType(panel)
+		speakers := panelSpeakers(panel)
 		if existingID, ok := rowByTitle[panelTitle]; ok {
-			updateRow(ctx, existingID, imageName, fileID, panel.Description, panel.Dialogue, token)
+			updateRow(ctx, existingID, imageName, fileID, panel.Description, panel.Dialogue, lt, speakers, token)
 			pageIDMap[existingID] = i
 			delete(rowByTitle, panelTitle)
 		} else {
-			createdID := createPanelRow(ctx, dbID, panelTitle, imageName, fileID, panel.Description, panel.Dialogue, token)
+			createdID := createPanelRow(ctx, dbID, panelTitle, imageName, fileID, panel.Description, panel.Dialogue, lt, speakers, token)
 			if createdID != "" {
 				pageIDMap[createdID] = i
 			}
@@ -300,12 +340,14 @@ func upsertPanelRows(ctx context.Context, dbID string, panels []domain.Panel, im
 	return pageIDMap, nil
 }
 
-func updateRow(ctx context.Context, pageID, imageName string, fileID, description, dialogue, token string) {
+func updateRow(ctx context.Context, pageID, imageName string, fileID, description, dialogue, lineType, speakers, token string) {
 	payload := map[string]any{
 		"properties": map[string]any{
 			"插圖":       map[string]any{"rich_text": richTextPayload(imageName)},
 			"Grok 提示詞": map[string]any{"rich_text": richTextPayload(description)},
 			"字幕文字":     map[string]any{"rich_text": richTextPayload(dialogue)},
+			"類型":       map[string]any{"select": map[string]any{"name": lineType}},
+			"說話者":      map[string]any{"rich_text": richTextPayload(speakers)},
 		},
 	}
 	if fileID != "" {
@@ -340,7 +382,7 @@ func createCoverRow(ctx context.Context, dbID, coverImage string, coverFileID st
 	}
 }
 
-func createPanelRow(ctx context.Context, dbID, panelTitle, imageName string, fileID string, description, dialogue, token string) string {
+func createPanelRow(ctx context.Context, dbID, panelTitle, imageName string, fileID string, description, dialogue, lineType, speakers, token string) string {
 	payload := map[string]any{
 		"parent": map[string]any{"type": "database_id", "database_id": dbID},
 		"properties": map[string]any{
@@ -348,6 +390,8 @@ func createPanelRow(ctx context.Context, dbID, panelTitle, imageName string, fil
 			"插圖":       map[string]any{"rich_text": richTextPayload(imageName)},
 			"Grok 提示詞": map[string]any{"rich_text": richTextPayload(description)},
 			"字幕文字":     map[string]any{"rich_text": richTextPayload(dialogue)},
+			"類型":       map[string]any{"select": map[string]any{"name": lineType}},
+			"說話者":      map[string]any{"rich_text": richTextPayload(speakers)},
 			"審核通過":     map[string]any{"checkbox": false},
 		},
 	}
