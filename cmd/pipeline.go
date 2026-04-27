@@ -230,6 +230,10 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	// Write storyboard manifest (post-image, pre-audio snapshot) if the pipeline produced one.
 	if result.Manifest != nil && pipelineOutputDir != "" {
+		// Resolve story title from --image-dir .txt filename; overrides projectID fallback.
+		if resolved := resolveStoryTitle(pipelineImageDir, result.Manifest.ProjectID); resolved != result.Manifest.ProjectID {
+			result.Manifest.StoryTitle = resolved
+		}
 		if err := os.MkdirAll(pipelineOutputDir, 0755); err == nil {
 			manifestPath := filepath.Join(pipelineOutputDir, "storyboard_manifest.json")
 			if manifestBytes, marshalErr := json.MarshalIndent(result.Manifest, "", "  "); marshalErr == nil {

@@ -51,8 +51,10 @@ func HITL(
 	}
 
 	fmt.Fprintf(os.Stderr, "[Info] 腳本已寫入 Notion DB：https://www.notion.so/%s\n", strings.ReplaceAll(dbID, "-", ""))
-	fmt.Fprintln(os.Stderr, "在 Notion 確認/編輯各幕內容後，按 Enter 繼續...")
-	if !skipWait {
+	if skipWait {
+		fmt.Fprintln(os.Stderr, "[Info] 分鏡稿已推送，可前往 Notion 審核編輯")
+	} else {
+		fmt.Fprintln(os.Stderr, "在 Notion 確認/編輯各幕內容後，按 Enter 繼續...")
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 	}
 
