@@ -619,14 +619,10 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 		for attempt := 0; attempt < maxAttempts; attempt++ {
 			if attempt > 0 {
 				fmt.Fprintf(os.Stderr, "[Info] Retrying Grok video panel %d (attempt %d/%d)\n", i+1, attempt+1, maxAttempts)
-				select {
-				case <-ctx.Done():
-					return "", ctx.Err()
-				case <-time.After(8 * time.Second):
-				}
+				time.Sleep(3 * time.Second)
 			}
 			execCmd := exec.CommandContext(ctx, "opencli", opencliArgs...)
-			execCmd.Env = append(os.Environ(), "OPENCLI_CDP_TARGET=grok.com", "OPENCLI_BROWSER_COMMAND_TIMEOUT=420")
+			execCmd.Env = append(os.Environ(), "OPENCLI_BROWSER_COMMAND_TIMEOUT=420")
 			runOut, panelErr = execCmd.CombinedOutput()
 			outStr := string(runOut)
 			if panelErr != nil {

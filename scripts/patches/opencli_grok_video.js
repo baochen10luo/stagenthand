@@ -121,7 +121,7 @@ export const videoCommand = cli({
             if (!existsSync(kwargs.image)) {
                 return [{ file: `[ERROR] image file not found: ${kwargs.image}` }];
             }
-            // Click the 圖片 button to reveal/activate the file input
+            // Click the 圖片 button to reveal the file input
             await page.evaluate(`
                 (function() {
                     const btn = Array.from(document.querySelectorAll('button')).find(b =>
@@ -132,12 +132,29 @@ export const videoCommand = cli({
                 })()
             `);
             await page.wait(1);
-            // Set file on the hidden input — signature: setFileInput(files[], selector)
+            // Make hidden file input visible and enabled so setFileInput works
+            await page.evaluate(`
+                (function() {
+                    const input = document.querySelector('input[type=file]');
+                    if (input) {
+                        input.style.display = '';
+                        input.style.visibility = 'visible';
+                        input.style.opacity = '1';
+                        input.removeAttribute('disabled');
+                    }
+                })()
+            `);
+            await page.wait(0.5);
             try {
                 await page.setFileInput([kwargs.image], 'input[type=file][accept="image/*"]');
             } catch (e) {
                 await page.setFileInput([kwargs.image], 'input[type=file]');
             }
+            await page.wait(3);
+        }
+
+        // I2V mode: wait for image to be processed before typing
+        if (kwargs.image) {
             await page.wait(2);
         }
 
@@ -243,6 +260,9 @@ export const videoCommand = cli({
         }
 
         if (!dlClicked) return [{ file: '[TIMEOUT] download button not found after ' + Math.round((Date.now() - startTime) / 1000) + 's' }];
+
+        // Wait a moment for blob to be captured
+        await page.wait(1);
 
         mkdirSync(outputDir, { recursive: true });
         const timestamp = Date.now();
