@@ -360,6 +360,25 @@ func ApplyRealAudioDuration(panels []domain.Panel) []domain.Panel {
 	return applyRealAudioDuration(panels)
 }
 
+// SetDurationFromAudio sets each panel's DurationSec directly to the real audio length
+// plus a tail buffer — overriding any prior estimate. Used by rough-cut where the
+// audio is the single source of truth for timing.
+func SetDurationFromAudio(panels []domain.Panel) []domain.Panel {
+	const tailBuffer = 0.5
+	for i, p := range panels {
+		if p.AudioURL == "" {
+			continue
+		}
+		dur, err := mp3Duration(p.AudioURL)
+		if err != nil {
+			slog.Warn("SetDurationFromAudio: could not read audio duration", "path", p.AudioURL, "error", err)
+			continue
+		}
+		panels[i].DurationSec = dur + tailBuffer
+	}
+	return panels
+}
+
 // ApplySubtitleTimings is the exported entry point used by rough-cut and other commands.
 func ApplySubtitleTimings(panels []domain.Panel) []domain.Panel {
 	return applySubtitleTimings(panels)

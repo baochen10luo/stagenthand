@@ -88,8 +88,8 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 				return stageError("rough-cut", "tts_error", err.Error())
 			}
 
-			// ── 4. Align duration to real audio length ───────────────────────
-			panels = pipeline.ApplyRealAudioDuration(panels)
+			// ── 4. Set duration = real audio length (audio is the only timing source) ──
+			panels = pipeline.SetDurationFromAudio(panels)
 		}
 
 		panels = pipeline.ApplySubtitleTimings(panels)
