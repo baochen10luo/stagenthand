@@ -131,12 +131,13 @@ type Episode struct {
 
 // Storyboard is the detailed scene-by-scene plan for a single episode.
 type Storyboard struct {
-	ProjectID  string      `json:"project_id"`
-	Episode    int         `json:"episode"`
-	BGMURL     string      `json:"bgm_url,omitempty"` // URL to background music
-	Directives *Directives `json:"directives,omitempty"` // Global rendering directives
-	Scenes     []Scene     `json:"scenes"`
-	CreatedAt  time.Time   `json:"created_at"`
+	ProjectID  string          `json:"project_id"`
+	Episode    int             `json:"episode"`
+	BGMURL     string          `json:"bgm_url,omitempty"`    // URL to background music
+	Directives *Directives     `json:"directives,omitempty"` // Global rendering directives
+	Characters []CharacterMeta `json:"characters,omitempty"` // LLM-generated character sheet
+	Scenes     []Scene         `json:"scenes"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 
 // Scene is a narrative unit within a storyboard.
@@ -260,6 +261,10 @@ type StoryboardManifest struct {
 	Category    string          `json:"category,omitempty"`
 	Language    string          `json:"language,omitempty"`
 	StylePrompt string          `json:"style_prompt,omitempty"`
+	BGMTags     string          `json:"bgm_tags,omitempty"`
+	ColorFilter string          `json:"color_filter,omitempty"`
+	TotalPanels int             `json:"total_panels,omitempty"`
+	TotalDurSec float64         `json:"total_dur_sec,omitempty"`
 	Characters  []CharacterMeta `json:"characters,omitempty"`
 	Panels      []Panel         `json:"panels"`
 }

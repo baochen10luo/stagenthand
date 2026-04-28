@@ -197,6 +197,13 @@ Output JSON MUST follow this schema:
 {
   "project_id": "...",
   "episode": 1,
+  "characters": [
+    {
+      "name": "角色名",
+      "role": "主角 / 配角 / 反派 / 旁白（功能描述）",
+      "description": "外貌、年齡、個性的一句話描述"
+    }
+  ],
   "directives": {
     "style_prompt": "YOUR_ACTUAL_STYLE_PROMPT_HERE (e.g., 'photorealistic cyberpunk, dark noir')",
     "color_filter": "cinematic",
@@ -208,7 +215,13 @@ Output JSON MUST follow this schema:
       "description": "..."
     }
   ]
-}`
+}
+
+CHARACTER RULES:
+- List every named character who appears or speaks in the story.
+- "role" should be the character's narrative function, e.g. "男主角", "女主角的母親", "反派老闆", "旁白".
+- "description" should be one sentence covering appearance, age, and defining personality trait.
+- Do NOT list unnamed extras or background characters.`
 
 	PromptStoryboardToPanels = `You are a visual panel designer and cinematographer. Convert the input storyboard JSON into a detailed panel-by-panel generation JSON.
 Target total video length: approximately 30–50 seconds. Use 4–7 panels maximum.

@@ -48,7 +48,7 @@ func HITL(
 		return panels, "", err
 	}
 
-	if err := writeMetadataBlocks(ctx, storyPageID, token, meta, coverImage); err != nil {
+	if err := writeMetadataBlocks(ctx, storyPageID, pageID, token, meta, coverImage); err != nil {
 		fmt.Fprintf(os.Stderr, "[Warning] Notion metadata blocks: %v\n", err)
 	}
 
@@ -172,8 +172,10 @@ func panelSpeakers(panel domain.Panel) string {
 // writeMetadataBlocks writes the story header (cover image, callout, synopsis,
 // characters, divider, 分鏡表 heading) to storyPageID. It is idempotent: if a
 // callout block already exists the function returns immediately without changes.
+// parentPageID is used as a temporary home when a child_database needs to be
+// moved out to ensure metadata blocks land before it.
 // meta may be nil; individual fields are optional and omitted when empty.
-func writeMetadataBlocks(ctx context.Context, storyPageID, token string, meta *domain.StoryboardManifest, coverImage string) error {
+func writeMetadataBlocks(ctx context.Context, storyPageID, parentPageID, token string, meta *domain.StoryboardManifest, coverImage string) error {
 	// Idempotency: skip if any callout block already present.
 	blocks, err := listBlockChildren(ctx, storyPageID, token)
 	if err != nil {
@@ -182,6 +184,28 @@ func writeMetadataBlocks(ctx context.Context, storyPageID, token string, meta *d
 	for _, b := range blocks {
 		if b.Type == "callout" {
 			return nil
+		}
+	}
+
+	// If a child_database already exists in this page, move it to the parent
+	// page temporarily so new metadata blocks land before it, then move it back.
+	var existingDBID string
+	for _, b := range blocks {
+		if b.Type == "child_database" {
+			existingDBID = b.ID
+			break
+		}
+	}
+	if existingDBID != "" {
+		if err := moveDatabase(ctx, existingDBID, parentPageID, token); err != nil {
+			fmt.Fprintf(os.Stderr, "[Warning] Notion DB move-out failed, metadata will append after DB: %v\n", err)
+			existingDBID = "" // skip move-back
+		} else {
+			defer func() {
+				if err := moveDatabase(ctx, existingDBID, storyPageID, token); err != nil {
+					fmt.Fprintf(os.Stderr, "[Error] failed to move DB %s back to story page — move it manually: %v\n", existingDBID, err)
+				}
+			}()
 		}
 	}
 
@@ -223,6 +247,15 @@ func writeMetadataBlocks(ctx context.Context, storyPageID, token string, meta *d
 			lang = "zh-TW"
 		}
 		calloutRT = append(calloutRT, rtBold("語言："), rtPlain(lang))
+		if meta.TotalPanels > 0 {
+			calloutRT = append(calloutRT, rtPlain("\n"), rtBold("幕數："), rtPlain(fmt.Sprintf("%d 幕（%s）", meta.TotalPanels, formatDuration(meta.TotalDurSec))))
+		}
+		if meta.BGMTags != "" {
+			calloutRT = append(calloutRT, rtPlain("\n"), rtBold("BGM："), rtPlain(meta.BGMTags))
+		}
+		if meta.ColorFilter != "" {
+			calloutRT = append(calloutRT, rtPlain("\n"), rtBold("色彩："), rtPlain(meta.ColorFilter))
+		}
 		if meta.StylePrompt != "" {
 			calloutRT = append(calloutRT, rtPlain("\n"), rtBold("風格提詞："), rtPlain(meta.StylePrompt))
 		}
@@ -252,16 +285,18 @@ func writeMetadataBlocks(ctx context.Context, storyPageID, token string, meta *d
 			"type": "heading_3", "heading_3": map[string]any{"rich_text": richTextPayload("主要角色")},
 		})
 		for _, c := range meta.Characters {
-			line := c.Name
+			// Name (Role) — Description
+			var rt []map[string]any
+			rt = append(rt, rtBold(c.Name))
 			if c.Role != "" {
-				line += "（" + c.Role + "）"
+				rt = append(rt, rtPlain("（"+c.Role+"）"))
 			}
 			if c.Description != "" {
-				line += " ── " + c.Description
+				rt = append(rt, rtPlain(" ── "+c.Description))
 			}
 			children = append(children, map[string]any{
-				"type": "bulleted_list_item",
-				"bulleted_list_item": map[string]any{"rich_text": richTextPayload(line)},
+				"type":               "bulleted_list_item",
+				"bulleted_list_item": map[string]any{"rich_text": rt},
 			})
 		}
 	}
@@ -274,6 +309,12 @@ func writeMetadataBlocks(ctx context.Context, storyPageID, token string, meta *d
 
 	body, _ := json.Marshal(map[string]any{"children": children})
 	return doJSON(ctx, http.MethodPatch, "https://api.notion.com/v1/blocks/"+storyPageID+"/children", token, string(body), nil)
+}
+
+// formatDuration formats total seconds as M:SS (e.g. 92.5 → "1:32").
+func formatDuration(sec float64) string {
+	total := int(sec)
+	return fmt.Sprintf("%d:%02d", total/60, total%60)
 }
 
 // rtBold returns a single bold rich-text item.
@@ -768,6 +809,29 @@ func fileUploadPayload(id string) map[string]any {
 		"type":        "file_upload",
 		"file_upload": map[string]any{"id": id},
 	}
+}
+
+// moveDatabase re-parents a Notion database to newParentPageID.
+// Requires Notion-Version 2025-09-03 which added database re-parenting support.
+func moveDatabase(ctx context.Context, dbID, newParentPageID, token string) error {
+	body := fmt.Sprintf(`{"parent":{"type":"page_id","page_id":%q}}`, newParentPageID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, "https://api.notion.com/v1/databases/"+dbID, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Notion-Version", "2025-09-03")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+	return nil
 }
 
 func doJSON(ctx context.Context, method, endpoint, token, body string, dest any) error {

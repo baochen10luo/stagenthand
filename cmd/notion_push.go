@@ -13,11 +13,13 @@ import (
 )
 
 var (
-	notionPushOutputDir string
-	notionPushPageID    string
-	notionPushAuthor    string
-	notionPushCategory  string
-	notionPushSynopsis  string
+	notionPushOutputDir  string
+	notionPushPageID     string
+	notionPushAuthor     string
+	notionPushCategory   string
+	notionPushSynopsis   string
+	notionPushBGMTags    string
+	notionPushColorFilter string
 )
 
 var notionPushCmd = &cobra.Command{
@@ -82,6 +84,12 @@ Does not wait for human approval — use rough-cut after reviewing in Notion.`,
 		if notionPushSynopsis != "" {
 			manifest.Synopsis = notionPushSynopsis
 		}
+		if notionPushBGMTags != "" {
+			manifest.BGMTags = notionPushBGMTags
+		}
+		if notionPushColorFilter != "" {
+			manifest.ColorFilter = notionPushColorFilter
+		}
 
 		// HITL with skipWait=true: upload rows, print story page URL, return immediately.
 		_, storyPageID, err := notion.HITL(cmd.Context(), manifest.Panels, imagePaths, coverImage,
@@ -111,5 +119,7 @@ func init() {
 	notionPushCmd.Flags().StringVar(&notionPushAuthor, "author", "", "story author name (overrides manifest)")
 	notionPushCmd.Flags().StringVar(&notionPushCategory, "category", "", "story category (overrides manifest)")
 	notionPushCmd.Flags().StringVar(&notionPushSynopsis, "synopsis", "", "story synopsis (overrides manifest)")
+	notionPushCmd.Flags().StringVar(&notionPushBGMTags, "bgm-tags", "", "BGM tags e.g. 'suspense+dark+ambient' (overrides manifest)")
+	notionPushCmd.Flags().StringVar(&notionPushColorFilter, "color-filter", "", "color filter e.g. 'cinematic' (overrides manifest)")
 	rootCmd.AddCommand(notionPushCmd)
 }

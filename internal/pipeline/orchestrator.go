@@ -113,7 +113,7 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 	// 1. Detection: Is this already a flat list of panels (RemotionProps)?
 	var props domain.RemotionProps
 	if jsonUnmarshal(inputData, &props) == nil && len(props.Panels) > 0 {
-		return o.executeFromPanels(ctx, props.ProjectID, props.Title, props.Panels, props.BGMURL, props.Directives)
+		return o.executeFromPanels(ctx, props.ProjectID, props.Title, props.Panels, props.BGMURL, props.Directives, nil)
 	}
 
 	// 2. Normal flow: Resolve to a Storyboard
@@ -155,12 +155,13 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 		}
 	}
 
-	return o.executeFromPanels(ctx, storyboard.ProjectID, "", panels, storyboard.BGMURL, storyboard.Directives)
+	return o.executeFromPanels(ctx, storyboard.ProjectID, "", panels, storyboard.BGMURL, storyboard.Directives, storyboard.Characters)
 }
 
 // executeFromPanels runs the asset generation stages (Images, Audio, Music) from a flat panel list.
 // storyTitle is used for the manifest; if empty, projectID is used as fallback.
-func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, storyTitle string, panels []domain.Panel, bgmURL string, directives *domain.Directives) (*PipelineResult, error) {
+// characters carries the LLM-generated character sheet from the storyboard stage; nil falls back to auto-extraction.
+func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, storyTitle string, panels []domain.Panel, bgmURL string, directives *domain.Directives, characters []domain.CharacterMeta) (*PipelineResult, error) {
 	var err error
 
 	// Derive storyTitle fallback
@@ -213,18 +214,32 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 			p.AudioURL = ""
 			manifestPanels[i] = p
 		}
-		stylePrompt := ""
-		language := ""
+		stylePrompt, language, bgmTags, colorFilter := "", "", "", ""
 		if directives != nil {
 			stylePrompt = directives.StylePrompt
 			language = directives.Language
+			bgmTags = directives.BGMTags
+			colorFilter = directives.ColorFilter
+		}
+		// Use LLM-generated character sheet if available; fall back to auto-extraction.
+		chars := characters
+		if len(chars) == 0 {
+			chars = extractCharacters(manifestPanels)
+		}
+		var totalDur float64
+		for _, p := range manifestPanels {
+			totalDur += p.DurationSec
 		}
 		manifest = &domain.StoryboardManifest{
 			ProjectID:   projectID,
 			StoryTitle:  storyTitle,
 			StylePrompt: stylePrompt,
 			Language:    language,
-			Characters:  extractCharacters(manifestPanels),
+			BGMTags:     bgmTags,
+			ColorFilter: colorFilter,
+			TotalPanels: len(manifestPanels),
+			TotalDurSec: totalDur,
+			Characters:  chars,
 			Panels:      manifestPanels,
 		}
 	}
