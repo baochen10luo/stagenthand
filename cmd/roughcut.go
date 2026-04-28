@@ -3,6 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -147,14 +150,30 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 		}
 
 		// ── 8. Build and write RemotionProps ─────────────────────────────────
+		width, height := 0, 0
 		videoFormat := render.VideoFormatLandscape
-		if roughCutFormat == "portrait" {
+		switch roughCutFormat {
+		case "portrait":
 			videoFormat = render.VideoFormatPortrait
+		case "landscape":
+			videoFormat = render.VideoFormatLandscape
+		default: // "" or "auto": read from first available image
+			for _, p := range panels {
+				if p.ImageURL != "" {
+					if w, h, err := readImageDimensions(p.ImageURL); err == nil {
+						width, height = w, h
+						fmt.Fprintf(os.Stderr, "[Info] canvas size auto-detected from image: %dx%d\n", w, h)
+					} else {
+						fmt.Fprintf(os.Stderr, "[Warning] could not read image dimensions from %s: %v\n", p.ImageURL, err)
+					}
+					break
+				}
+			}
 		}
 
 		props := remotion.PanelsToPropsWithFormat(
 			manifest.ProjectID, panels,
-			0, 0, 24, bgmURL, directives, videoFormat,
+			width, height, 24, bgmURL, directives, videoFormat,
 		)
 		props.Title = manifest.StoryTitle
 
@@ -235,6 +254,20 @@ func pruneStaleAudio(original, merged []domain.Panel, audioDir string) {
 	}
 }
 
+// readImageDimensions returns the pixel dimensions of an image file without fully decoding it.
+func readImageDimensions(path string) (int, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return 0, 0, err
+	}
+	return cfg.Width, cfg.Height, nil
+}
+
 // validateImagePaths checks that every panel with a non-empty ImageURL points to an
 // existing file. Returns nil if all paths exist. Returns an error listing missing files.
 func validateImagePaths(panels []domain.Panel) error {
@@ -260,8 +293,8 @@ func init() {
 		"Notion page ID to read edits from (overrides NOTION_GROK_PAGE_ID env var)")
 	roughCutCmd.Flags().StringVar(&roughCutLanguage, "language", "",
 		"TTS language (zh-TW, en-US, ja-JP, …); defaults to manifest language or zh-TW")
-	roughCutCmd.Flags().StringVar(&roughCutFormat, "format", "landscape",
-		"output video format: landscape or portrait")
+	roughCutCmd.Flags().StringVar(&roughCutFormat, "format", "",
+		"output video format: landscape (1024×576), portrait (576×1024), or empty to auto-detect from image")
 	roughCutCmd.Flags().BoolVar(&roughCutSkipRender, "skip-render", false,
 		"write remotion_props.json but skip Remotion render")
 	rootCmd.AddCommand(roughCutCmd)
