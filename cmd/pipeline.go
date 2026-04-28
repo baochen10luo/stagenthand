@@ -21,6 +21,7 @@ import (
 	"github.com/baochen10luo/stagenthand/internal/image"
 	"github.com/baochen10luo/stagenthand/internal/llm"
 	"github.com/baochen10luo/stagenthand/internal/pipeline"
+	"github.com/baochen10luo/stagenthand/internal/hyperframes"
 	"github.com/baochen10luo/stagenthand/internal/remotion"
 	"github.com/baochen10luo/stagenthand/internal/render"
 	"github.com/baochen10luo/stagenthand/internal/series"
@@ -256,7 +257,9 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	var finalVideoPath string
 	var retryStrategy string
 
-	executor := remotion.NewCLIExecutor(dryRun)
+	shandHomeDir, _ := os.UserHomeDir()
+	shandHomeDir = filepath.Join(shandHomeDir, ".shand")
+	executor := remotion.NewCLIExecutorWithPublicDir(dryRun, shandHomeDir)
 
 	rawTemplatePath := ""
 	if cfg != nil && cfg.Remotion.TemplatePath != "" {
@@ -402,6 +405,14 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 			finalVideoPath = grokVideoPath
 			reelApprovedFlag = true
 		}
+	} else if videoBackend == "hyperframes" {
+		hfVideoPath, hfErr := runHyperframesStage(cmd.Context(), props, pipelineOutputDir, dryRun)
+		if hfErr != nil {
+			fmt.Fprintf(os.Stderr, "[Warning] HyperFrames stage failed, using static video: %v\n", hfErr)
+		} else {
+			finalVideoPath = hfVideoPath
+			reelApprovedFlag = true
+		}
 	}
 
 	// HITL: final checkpoint after render (only when a video was produced)
@@ -494,7 +505,7 @@ func init() {
 	pipelineCmd.Flags().IntVar(&pipelineSeriesWindow, "series-window", 3,
 		"Number of recent episodes to inject as context. (default: 3)")
 	pipelineCmd.Flags().StringVar(&pipelineVideoBackend, "video-backend", "",
-		"video backend: remotion (default), nova_reel, or grok_browser")
+		"video backend: remotion (default), nova_reel, grok_browser, or hyperframes")
 	pipelineCmd.Flags().StringVar(&pipelineImageDir, "image-dir", "",
 		"use pre-existing images from this directory (sorted by filename); skips image generation API")
 	pipelineCmd.Flags().IntVar(&pipelineTargetPanels, "panels", 0,
@@ -852,4 +863,49 @@ func runReelCritic(ctx context.Context, videoPath string, props domain.RemotionP
 	}
 
 	return eval.CheckApproval(), nil
+}
+
+// runHyperframesStage renders a video using HyperFrames (HTML→headless Chrome→FFmpeg)
+// and mixes TTS + BGM audio separately via FFmpeg.
+func runHyperframesStage(ctx context.Context, props domain.RemotionProps, outputDir string, dryRun bool) (string, error) {
+	homeDir, _ := os.UserHomeDir()
+	shandHome := filepath.Join(homeDir, ".shand")
+
+	hfProjectDir := filepath.Join(outputDir, "hyperframes-project")
+	if err := os.MkdirAll(hfProjectDir, 0755); err != nil {
+		return "", fmt.Errorf("create hyperframes project dir: %w", err)
+	}
+
+	hfCfg := hyperframes.Config{
+		ShandHome: shandHome,
+		DryRun:    dryRun,
+	}
+
+	if err := hyperframes.GenerateProject(props, hfProjectDir, hfCfg); err != nil {
+		return "", fmt.Errorf("hyperframes generate project: %w", err)
+	}
+
+	silentVideoPath := filepath.Join(hfProjectDir, "silent.mp4")
+	executor := hyperframes.NewCLIExecutor(dryRun)
+	if err := executor.Render(ctx, hfProjectDir, silentVideoPath); err != nil {
+		return "", fmt.Errorf("hyperframes render: %w", err)
+	}
+
+	audioMixPath, err := hyperframes.MixAudio(ctx, props, hfCfg, outputDir)
+	if err != nil {
+		return "", fmt.Errorf("hyperframes audio mix: %w", err)
+	}
+
+	finalPath := filepath.Join(outputDir, "output_hyperframes.mp4")
+	if audioMixPath == "" {
+		if err := os.Rename(silentVideoPath, finalPath); err != nil {
+			return "", fmt.Errorf("rename silent video: %w", err)
+		}
+	} else {
+		if err := hyperframes.MuxVideoAudio(ctx, silentVideoPath, audioMixPath, finalPath); err != nil {
+			return "", fmt.Errorf("hyperframes mux: %w", err)
+		}
+	}
+
+	return finalPath, nil
 }

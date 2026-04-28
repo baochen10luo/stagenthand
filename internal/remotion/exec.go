@@ -9,11 +9,18 @@ import (
 
 // CLIExecutor implements Executor by actually spawning `npx remotion` commands.
 type CLIExecutor struct {
-	dryRun bool
+	dryRun    bool
+	publicDir string // passed as --public-dir; empty = use remotion default (./public)
 }
 
 func NewCLIExecutor(dryRun bool) *CLIExecutor {
 	return &CLIExecutor{dryRun: dryRun}
+}
+
+// NewCLIExecutorWithPublicDir creates a CLIExecutor that passes --public-dir to remotion,
+// allowing static assets outside the template's own public/ directory to be served.
+func NewCLIExecutorWithPublicDir(dryRun bool, publicDir string) *CLIExecutor {
+	return &CLIExecutor{dryRun: dryRun, publicDir: publicDir}
 }
 
 // Render triggers `npx remotion render src/index.ts <composition> <output> --props=<propsPath>` inside `templatePath`.
@@ -23,7 +30,11 @@ func (c *CLIExecutor) Render(ctx context.Context, templatePath string, compositi
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "npx", "--no-install", "remotion", "render", "src/index.ts", composition, outputPath, "--props", propsPath)
+	args := []string{"--no-install", "remotion", "render", "src/index.ts", composition, outputPath, "--props", propsPath}
+	if c.publicDir != "" {
+		args = append(args, "--public-dir", c.publicDir)
+	}
+	cmd := exec.CommandContext(ctx, "npx", args...)
 	cmd.Dir = templatePath
 	cmd.Stdout = os.Stderr // pipe remotion stdout to shand stderr
 	cmd.Stderr = os.Stderr
@@ -43,8 +54,11 @@ func (c *CLIExecutor) Preview(ctx context.Context, templatePath string, composit
 		return nil
 	}
 
-	// For studio we don't pass composition to enforce one, studio handles interactive selection. But we pass props.
-	cmd := exec.CommandContext(ctx, "npx", "--no-install", "remotion", "studio", "src/index.ts", "--props", propsPath)
+	args := []string{"--no-install", "remotion", "studio", "src/index.ts", "--props", propsPath}
+	if c.publicDir != "" {
+		args = append(args, "--public-dir", c.publicDir)
+	}
+	cmd := exec.CommandContext(ctx, "npx", args...)
 	cmd.Dir = templatePath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

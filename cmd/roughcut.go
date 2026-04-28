@@ -172,7 +172,7 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 				templatePath = cfg.Remotion.TemplatePath
 			}
 			outputPath := filepath.Join(roughCutOutputDir, "rough_cut.mp4")
-			executor := remotion.NewCLIExecutor(false)
+			executor := remotion.NewCLIExecutorWithPublicDir(false, shandHome)
 			if renderErr := executor.Render(cmd.Context(), templatePath, "ShortDrama", propsPath, outputPath); renderErr != nil {
 				return stageError("rough-cut", "render_error", renderErr.Error())
 			}

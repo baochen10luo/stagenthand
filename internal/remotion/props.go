@@ -66,16 +66,16 @@ func PanelsToPropsWithFormat(projectID string, panels []domain.Panel, width, hei
 }
 
 func normalizePath(path, projectID string) string {
-	if path == "" || strings.HasPrefix(path, "/shand/") {
+	if path == "" || strings.HasPrefix(path, "/projects/") {
 		return path
 	}
 
-	// Look for the "projects/<project_id>/" segment in the absolute path
+	// Extract the "projects/<project_id>/subpath" segment from an absolute path
+	// and return it as a root-relative virtual path served by --public-dir ~/.shand.
 	marker := fmt.Sprintf("projects/%s/", projectID)
 	idx := strings.Index(path, marker)
 	if idx != -1 {
-		// Convert to virtual path: /shand/<project_id>/...
-		return "/shand/" + projectID + "/" + path[idx+len(marker):]
+		return "/" + path[idx:] // /projects/<project_id>/images/... or /audio/...
 	}
 
 	return path
