@@ -59,6 +59,15 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 				fmt.Sprintf("could not parse storyboard_manifest.json: %v", err))
 		}
 
+		// Resolve TTS language: flag > manifest > default.
+		lang := roughCutLanguage
+		if lang == "" {
+			lang = manifest.Language
+		}
+		if lang == "" {
+			lang = "zh-TW"
+		}
+
 		panels := manifest.Panels
 
 		// ── 2. Pull Notion edits (if token available) ────────────────────────
@@ -67,7 +76,7 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 			if notionErr != nil {
 				fmt.Fprintf(os.Stderr, "[Warning] Notion read skipped: %v\n", notionErr)
 			} else {
-				panels = mergeNotionEdits(panels, notionPanels)
+				panels = mergeNotionEdits(manifest.Panels, notionPanels)
 			}
 		} else {
 			fmt.Fprintln(os.Stderr, "[Warning] NOTION_API_KEY not set; using manifest dialogue as-is")
@@ -79,30 +88,65 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 			}
 		}
 
-		if !dryRun {
-			// ── 3. Generate TTS audio ────────────────────────────────────────
-			shandHome, _ := os.UserHomeDir()
-			shandHome = filepath.Join(shandHome, ".shand")
+		shandHome, _ := os.UserHomeDir()
+		shandHome = filepath.Join(shandHome, ".shand")
+		audioDir := filepath.Join("projects", manifest.ProjectID, "audio")
+		fullAudioDir := filepath.Join(shandHome, audioDir)
 
+		if !dryRun {
+			// ── 3. Prune stale audio for panels whose Notion dialogue changed ─
+			pruneStaleAudio(manifest.Panels, panels, fullAudioDir)
+
+			// ── 4. Generate TTS audio ────────────────────────────────────────
 			audioClient := audio.NewPollyCLIClientWithLanguage(
 				cfg.LLM.AWSRegion, cfg.LLM.AWSAccessKeyID, cfg.LLM.AWSSecretAccessKey,
-				roughCutLanguage,
+				lang,
 			)
 			audioBatcher := pipeline.NewAudioClientBatcher(audioClient, shandHome)
-			audioDir := filepath.Join("projects", manifest.ProjectID, "audio")
 
 			panels, err = audioBatcher.BatchGenerateAudio(cmd.Context(), panels, audioDir)
 			if err != nil {
 				return stageError("rough-cut", "tts_error", err.Error())
 			}
 
-			// ── 4. Set duration = real audio length (audio is the only timing source) ──
+			// ── 5. Set duration = real audio length ──────────────────────────
 			panels = pipeline.OverrideDurationFromAudio(panels)
 		}
 
 		panels = pipeline.ApplySubtitleTimings(panels)
 
-		// ── 5. Build and write RemotionProps ─────────────────────────────────
+		// ── 6. BGM: reuse existing or download via Jamendo ───────────────────
+		bgmURL := ""
+		if !dryRun && manifest.BGMTags != "" && cfg.Audio.JamendoClientID != "" {
+			bgmPath := filepath.Join(fullAudioDir, "bgm.mp3")
+			if info, statErr := os.Stat(bgmPath); statErr == nil && info.Size() > 0 {
+				bgmURL = bgmPath
+				fmt.Fprintf(os.Stderr, "[Info] BGM reused: %s\n", bgmPath)
+			} else {
+				musicClient := audio.NewJamendoClient(cfg.Audio.JamendoClientID)
+				musicBatcher := pipeline.NewMusicClientBatcher(musicClient, shandHome)
+				bgm, bgmErr := musicBatcher.GenerateProjectBGM(cmd.Context(), manifest.ProjectID, manifest.BGMTags, audioDir)
+				if bgmErr != nil {
+					fmt.Fprintf(os.Stderr, "[Warning] BGM download failed: %v\n", bgmErr)
+				} else {
+					bgmURL = bgm
+					fmt.Fprintf(os.Stderr, "[Info] BGM downloaded: %s\n", bgmURL)
+				}
+			}
+		}
+
+		// ── 7. Build Directives from manifest ────────────────────────────────
+		var directives *domain.Directives
+		if manifest.BGMTags != "" || manifest.ColorFilter != "" || manifest.StylePrompt != "" || manifest.Language != "" {
+			directives = &domain.Directives{
+				BGMTags:     manifest.BGMTags,
+				ColorFilter: manifest.ColorFilter,
+				StylePrompt: manifest.StylePrompt,
+				Language:    manifest.Language,
+			}
+		}
+
+		// ── 8. Build and write RemotionProps ─────────────────────────────────
 		videoFormat := render.VideoFormatLandscape
 		if roughCutFormat == "portrait" {
 			videoFormat = render.VideoFormatPortrait
@@ -110,7 +154,7 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 
 		props := remotion.PanelsToPropsWithFormat(
 			manifest.ProjectID, panels,
-			0, 0, 24, "", nil, videoFormat,
+			0, 0, 24, bgmURL, directives, videoFormat,
 		)
 		props.Title = manifest.StoryTitle
 
@@ -121,7 +165,7 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 		}
 		fmt.Fprintf(os.Stderr, "[Info] remotion_props.json written → %s\n", propsPath)
 
-		// ── 6. Render ────────────────────────────────────────────────────────
+		// ── 9. Render ────────────────────────────────────────────────────────
 		if !roughCutSkipRender && !dryRun {
 			templatePath := "./remotion-template"
 			if cfg != nil && cfg.Remotion.TemplatePath != "" {
@@ -140,6 +184,7 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 			"story_title": manifest.StoryTitle,
 			"panel_count": len(panels),
 			"props_path":  propsPath,
+			"bgm":         bgmURL != "",
 		}
 		return json.NewEncoder(os.Stdout).Encode(result)
 	},
@@ -147,8 +192,8 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 
 // mergeNotionEdits overlays Notion-edited dialogue/description onto manifest panels.
 // Matching is by panel order (幕 01 → panels[0], 幕 02 → panels[1], …).
-// Image paths are always taken from the manifest to ensure local files are used.
-// When Notion has fewer rows than the manifest, a warning is logged for the leftover panels.
+// When Dialogue changes, DialogueLines is rebuilt as a single narration line so that
+// subtitle timings reflect the new text. Image paths always come from the manifest.
 func mergeNotionEdits(manifest []domain.Panel, notion []domain.Panel) []domain.Panel {
 	result := make([]domain.Panel, len(manifest))
 	copy(result, manifest)
@@ -158,8 +203,11 @@ func mergeNotionEdits(manifest []domain.Panel, notion []domain.Panel) []domain.P
 				"panel_index", i, "manifest_panels", len(manifest), "notion_panels", len(notion))
 			continue
 		}
-		if notion[i].Dialogue != "" {
+		if notion[i].Dialogue != "" && notion[i].Dialogue != result[i].Dialogue {
 			result[i].Dialogue = notion[i].Dialogue
+			// Notion stores only the flat dialogue text; rebuild DialogueLines so
+			// subtitle timings are computed from the edited text, not the old one.
+			result[i].DialogueLines = []domain.DialogueLine{{Speaker: "", Text: notion[i].Dialogue}}
 		}
 		if notion[i].Description != "" {
 			result[i].Description = notion[i].Description
@@ -167,6 +215,24 @@ func mergeNotionEdits(manifest []domain.Panel, notion []domain.Panel) []domain.P
 		// Always keep manifest's ImageURL (local path).
 	}
 	return result
+}
+
+// pruneStaleAudio deletes cached audio files for panels whose dialogue changed
+// after Notion editing, so BatchGenerateAudio re-generates them instead of reusing stale files.
+func pruneStaleAudio(original, merged []domain.Panel, audioDir string) {
+	for i := range merged {
+		if i >= len(original) {
+			break
+		}
+		if original[i].Dialogue == merged[i].Dialogue {
+			continue
+		}
+		filename := fmt.Sprintf("scene_%d_panel_%d.mp3", merged[i].SceneNumber, merged[i].PanelNumber)
+		path := filepath.Join(audioDir, filename)
+		if err := os.Remove(path); err == nil {
+			fmt.Fprintf(os.Stderr, "[Info] cleared stale audio for panel %d (dialogue changed)\n", i+1)
+		}
+	}
 }
 
 // validateImagePaths checks that every panel with a non-empty ImageURL points to an
@@ -192,8 +258,8 @@ func init() {
 		"project output directory containing storyboard_manifest.json")
 	roughCutCmd.Flags().StringVar(&roughCutPageID, "notion-page-id", "",
 		"Notion page ID to read edits from (overrides NOTION_GROK_PAGE_ID env var)")
-	roughCutCmd.Flags().StringVar(&roughCutLanguage, "language", "zh-TW",
-		"TTS language (zh-TW, en-US, ja-JP, ko-KR, …)")
+	roughCutCmd.Flags().StringVar(&roughCutLanguage, "language", "",
+		"TTS language (zh-TW, en-US, ja-JP, …); defaults to manifest language or zh-TW")
 	roughCutCmd.Flags().StringVar(&roughCutFormat, "format", "landscape",
 		"output video format: landscape or portrait")
 	roughCutCmd.Flags().BoolVar(&roughCutSkipRender, "skip-render", false,
