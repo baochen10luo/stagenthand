@@ -69,22 +69,21 @@ Does not wait for human approval — use rough-cut after reviewing in Notion.`,
 			}
 		}
 
-		// HITL with skipWait=true: upload rows, print Notion URL, return immediately.
-		_, err = notion.HITL(cmd.Context(), manifest.Panels, imagePaths, coverImage,
+		// HITL with skipWait=true: upload rows, print story page URL, return immediately.
+		_, storyPageID, err := notion.HITL(cmd.Context(), manifest.Panels, imagePaths, coverImage,
 			manifest.StoryTitle, pageID, token, true)
 		if err != nil {
 			return stageError("notion-push", "notion_error", err.Error())
 		}
 
-		dbURL := "https://www.notion.so/" + strings.ReplaceAll(pageID, "-", "")
-		fmt.Fprintf(os.Stderr, "[Info] Notion 分鏡表已更新：%s\n", dbURL)
+		storyURL := "https://www.notion.so/" + strings.ReplaceAll(storyPageID, "-", "")
 		fmt.Fprintf(os.Stderr, "[Info] 在 Notion 編輯完成後，執行 rough-cut 產出粗剪影片\n")
 
 		result := map[string]any{
 			"project_id":   manifest.ProjectID,
 			"story_title":  manifest.StoryTitle,
 			"panel_count":  len(manifest.Panels),
-			"notion_page":  dbURL,
+			"notion_page":  storyURL,
 		}
 		return json.NewEncoder(os.Stdout).Encode(result)
 	},

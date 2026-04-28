@@ -3,7 +3,6 @@ package notion
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,9 +10,9 @@ import (
 	"github.com/baochen10luo/stagenthand/internal/domain"
 )
 
-// ReadPanels reads all panel rows from the Notion DB titled storyTitle on pageID.
-// Rows are returned as domain.Panel values in 幕號 order. ImageURL is set to the
-// 插圖 filename so callers can match panels to local image files.
+// ReadPanels reads all panel rows from the database inside the story sub-page
+// titled storyTitle on pageID (the parent page, e.g. Phase-02).
+// Rows are returned as domain.Panel values in 幕號 order.
 func ReadPanels(ctx context.Context, pageID, storyTitle, token string) ([]domain.Panel, error) {
 	dbID, err := findDatabase(ctx, pageID, storyTitle, token)
 	if err != nil {
@@ -63,29 +62,38 @@ func ReadPanels(ctx context.Context, pageID, storyTitle, token string) ([]domain
 	return panels, nil
 }
 
-// findDatabase returns the ID of the Notion child_database on pageID whose title
-// matches storyTitle. Returns an error if no matching database is found.
+// findDatabase finds the child_database inside the story sub-page titled
+// storyTitle on pageID. It first locates the child_page, then returns the
+// first child_database found inside it.
 func findDatabase(ctx context.Context, pageID, storyTitle, token string) (string, error) {
 	blocks, err := listBlockChildren(ctx, pageID, token)
 	if err != nil {
 		return "", fmt.Errorf("list Notion page children: %w", err)
 	}
+
+	// Find the story child_page by title.
+	storyPageID := ""
 	for _, block := range blocks {
-		if block.Type != "child_database" {
-			continue
+		if block.Type == "child_page" && block.ChildPage != nil && block.ChildPage.Title == storyTitle {
+			storyPageID = block.ID
+			break
 		}
-		dbURL := "https://api.notion.com/v1/databases/" + block.ID
-		var dbInfo struct {
-			Title []textItem `json:"title"`
-		}
-		if err := doJSON(ctx, http.MethodGet, dbURL, token, "", &dbInfo); err != nil {
-			continue
-		}
-		if len(dbInfo.Title) > 0 && dbInfo.Title[0].PlainText == storyTitle {
+	}
+	if storyPageID == "" {
+		return "", fmt.Errorf("story page %q not found on page %s", storyTitle, pageID)
+	}
+
+	// Find first child_database inside the story page.
+	storyBlocks, err := listBlockChildren(ctx, storyPageID, token)
+	if err != nil {
+		return "", fmt.Errorf("list story page children: %w", err)
+	}
+	for _, block := range storyBlocks {
+		if block.Type == "child_database" {
 			return block.ID, nil
 		}
 	}
-	return "", fmt.Errorf("Notion database %q not found on page %s", storyTitle, pageID)
+	return "", fmt.Errorf("no database found in story page %q", storyTitle)
 }
 
 // parsePanelIndex extracts the numeric index from a row title like "幕 01" → 1.

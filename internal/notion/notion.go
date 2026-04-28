@@ -19,8 +19,10 @@ import (
 	"github.com/baochen10luo/stagenthand/internal/domain"
 )
 
-// HITL writes the panel storyboard to a Notion Database, optionally waits for
+// HITL writes the panel storyboard to a Notion story sub-page, optionally waits for
 // user confirmation via stdin, then reads back any edits and returns the updated panels.
+// pageID is the parent (e.g. Phase-02) page that contains one child_page per story.
+// Returns the updated panels and the story sub-page ID.
 func HITL(
 	ctx context.Context,
 	panels []domain.Panel,
@@ -30,34 +32,40 @@ func HITL(
 	pageID string,
 	token string,
 	skipWait bool,
-) ([]domain.Panel, error) {
+) ([]domain.Panel, string, error) {
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "[Warning] NOTION_API_KEY is empty; skipping Notion HITL checkpoint")
-		return panels, nil
+		return panels, "", nil
 	}
 	if pageID == "" {
-		return panels, fmt.Errorf("NOTION_GROK_PAGE_ID is empty")
+		return panels, "", fmt.Errorf("NOTION_GROK_PAGE_ID is empty")
 	}
 
-	dbTitle := storyTitle
-
-	dbID, err := findOrCreateDatabase(ctx, pageID, token, dbTitle)
+	storyPageID, err := findOrCreateStoryPage(ctx, pageID, token, storyTitle)
 	if err != nil {
-		return panels, err
+		return panels, "", err
 	}
+
+	dbID, err := findOrCreateDatabase(ctx, storyPageID, token)
+	if err != nil {
+		return panels, storyPageID, err
+	}
+
 	pageIDMap, err := upsertPanelRows(ctx, dbID, panels, imagePaths, coverImage, token)
 	if err != nil {
-		return panels, err
+		return panels, storyPageID, err
 	}
 
+	storyURL := "https://www.notion.so/" + strings.ReplaceAll(storyPageID, "-", "")
 	if skipWait {
-		fmt.Fprintln(os.Stderr, "[Info] 分鏡稿已推送，可前往 Notion 審核編輯")
+		fmt.Fprintf(os.Stderr, "[Info] 分鏡稿已推送：%s\n", storyURL)
 	} else {
-		fmt.Fprintln(os.Stderr, "在 Notion 確認/編輯各幕內容後，按 Enter 繼續...")
+		fmt.Fprintf(os.Stderr, "在 Notion 確認/編輯各幕內容後，按 Enter 繼續...\n%s\n", storyURL)
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 	}
 
-	return readPanelRows(ctx, dbID, panels, pageIDMap, token)
+	updated, err := readPanelRows(ctx, dbID, panels, pageIDMap, token)
+	return updated, storyPageID, err
 }
 
 // ── internal types ────────────────────────────────────────────────────────────
@@ -77,8 +85,14 @@ type propertyValue struct {
 }
 
 type blockResult struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	ChildPage     *struct {
+		Title string `json:"title"`
+	} `json:"child_page,omitempty"`
+	ChildDatabase *struct {
+		Title string `json:"title"`
+	} `json:"child_database,omitempty"`
 }
 
 type pageResult struct {
@@ -149,10 +163,46 @@ func panelSpeakers(panel domain.Panel) string {
 
 // ── database management ───────────────────────────────────────────────────────
 
-func findOrCreateDatabase(ctx context.Context, pageID, token, title string) (string, error) {
-	blocks, err := listBlockChildren(ctx, pageID, token)
+// findOrCreateStoryPage finds a child_page titled storyTitle on parentPageID,
+// or creates one if not found. Returns the story page ID.
+func findOrCreateStoryPage(ctx context.Context, parentPageID, token, storyTitle string) (string, error) {
+	blocks, err := listBlockChildren(ctx, parentPageID, token)
 	if err != nil {
 		return "", fmt.Errorf("list Notion page children: %w", err)
+	}
+	for _, block := range blocks {
+		if block.Type == "child_page" && block.ChildPage != nil && block.ChildPage.Title == storyTitle {
+			return block.ID, nil
+		}
+	}
+
+	payload := map[string]any{
+		"parent": map[string]any{"page_id": parentPageID},
+		"icon":   map[string]any{"type": "emoji", "emoji": "🎬"},
+		"properties": map[string]any{
+			"title": map[string]any{"title": richTextPayload(storyTitle)},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := doJSON(ctx, http.MethodPost, "https://api.notion.com/v1/pages", token, string(body), &resp); err != nil {
+		return "", fmt.Errorf("create story page: %w", err)
+	}
+	if resp.ID == "" {
+		return "", fmt.Errorf("create story page: empty id")
+	}
+	return resp.ID, nil
+}
+
+// findOrCreateDatabase finds the first child_database inside storyPageID,
+// or creates one titled "分鏡表" if none exists.
+// It also patches any missing required schema columns.
+func findOrCreateDatabase(ctx context.Context, storyPageID, token string) (string, error) {
+	blocks, err := listBlockChildren(ctx, storyPageID, token)
+	if err != nil {
+		return "", fmt.Errorf("list story page children: %w", err)
 	}
 
 	for _, block := range blocks {
@@ -161,16 +211,11 @@ func findOrCreateDatabase(ctx context.Context, pageID, token, title string) (str
 		}
 		dbURL := "https://api.notion.com/v1/databases/" + block.ID
 		var dbInfo struct {
-			Title     []textItem              `json:"title"`
 			Properties map[string]json.RawMessage `json:"properties"`
 		}
 		if err := doJSON(ctx, http.MethodGet, dbURL, token, "", &dbInfo); err != nil {
 			continue
 		}
-		if len(dbInfo.Title) == 0 || dbInfo.Title[0].PlainText != title {
-			continue
-		}
-
 		missing := map[string]any{}
 		for col, schema := range requiredProperties {
 			if _, ok := dbInfo.Properties[col]; !ok {
@@ -183,19 +228,20 @@ func findOrCreateDatabase(ctx context.Context, pageID, token, title string) (str
 				fmt.Fprintf(os.Stderr, "[Warning] Notion DB schema patch: %v\n", err)
 			}
 		}
-
 		return block.ID, nil
 	}
 
-	// No existing database found — create one.
+	// No database found — create one inside the story page.
 	payload := map[string]any{
-		"parent": map[string]any{"type": "page_id", "page_id": pageID},
-		"title":  richTextPayload(title),
+		"parent": map[string]any{"type": "page_id", "page_id": storyPageID},
+		"title":  richTextPayload("分鏡表"),
 		"properties": map[string]any{
 			"幕號":       map[string]any{"title": map[string]any{}},
 			"插圖":       map[string]any{"rich_text": map[string]any{}},
 			"Grok 提示詞": map[string]any{"rich_text": map[string]any{}},
 			"字幕文字":     map[string]any{"rich_text": map[string]any{}},
+			"類型":       map[string]any{"select": map[string]any{}},
+			"說話者":      map[string]any{"rich_text": map[string]any{}},
 			"審核通過":     map[string]any{"checkbox": map[string]any{}},
 			"備註":       map[string]any{"rich_text": map[string]any{}},
 		},
@@ -208,61 +254,11 @@ func findOrCreateDatabase(ctx context.Context, pageID, token, title string) (str
 		return "", fmt.Errorf("create Notion database: %w", err)
 	}
 	if resp.ID == "" {
-		return "", fmt.Errorf("create Notion database: empty database id")
+		return "", fmt.Errorf("create Notion database: empty id")
 	}
 	return resp.ID, nil
 }
 
-func ensurePageHeader(ctx context.Context, pageID, token, dbTitle, storyTitle string, total int) error {
-	blocks, err := listBlockChildren(ctx, pageID, token)
-	if err != nil {
-		return fmt.Errorf("list Notion page children for header: %w", err)
-	}
-
-	insertAfter := ""
-	hasDatabase := false
-	for i, block := range blocks {
-		if block.Type == "heading_1" {
-			return nil // header already present
-		}
-		if block.Type == "child_database" {
-			hasDatabase = true
-			if i > 0 {
-				insertAfter = blocks[i-1].ID
-			}
-			break
-		}
-	}
-
-	payload := map[string]any{
-		"children": []map[string]any{
-			{
-				"type": "heading_1",
-				"heading_1": map[string]any{
-					"rich_text": richTextPayload("🎬 " + dbTitle),
-				},
-			},
-			{
-				"type": "paragraph",
-				"paragraph": map[string]any{
-					"rich_text": richTextPayload(fmt.Sprintf(
-						"專案：%s　總幕數：%d",
-						storyTitle, total,
-					)),
-				},
-			},
-		},
-	}
-	if hasDatabase && insertAfter != "" {
-		payload["after"] = insertAfter
-	}
-
-	body, _ := json.Marshal(payload)
-	if err := doJSON(ctx, http.MethodPatch, "https://api.notion.com/v1/blocks/"+pageID+"/children", token, string(body), nil); err != nil {
-		return fmt.Errorf("create Notion page header: %w", err)
-	}
-	return nil
-}
 
 func clearDatabaseRows(ctx context.Context, dbID, token string) error {
 	rows, err := queryDatabase(ctx, dbID, token, nil)
