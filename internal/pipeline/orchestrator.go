@@ -213,10 +213,19 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 			p.AudioURL = ""
 			manifestPanels[i] = p
 		}
+		stylePrompt := ""
+		language := ""
+		if directives != nil {
+			stylePrompt = directives.StylePrompt
+			language = directives.Language
+		}
 		manifest = &domain.StoryboardManifest{
-			ProjectID:  projectID,
-			StoryTitle: storyTitle,
-			Panels:     manifestPanels,
+			ProjectID:   projectID,
+			StoryTitle:  storyTitle,
+			StylePrompt: stylePrompt,
+			Language:    language,
+			Characters:  extractCharacters(manifestPanels),
+			Panels:      manifestPanels,
 		}
 	}
 
@@ -519,6 +528,24 @@ func isWhitespaceRune(r rune) bool {
 // normalizePanelSpeakers collapses known narrator labels ("旁白", "VO", etc.) to ""
 // across all DialogueLines in every panel. Called immediately after LLM generation
 // so downstream code (Notion, TTS routing, subtitles) sees consistent speaker values.
+// extractCharacters collects unique named speakers across all panels.
+// Empty speaker (narration) is excluded.
+func extractCharacters(panels []domain.Panel) []domain.CharacterMeta {
+	seen := map[string]bool{}
+	var chars []domain.CharacterMeta
+	for _, p := range panels {
+		for _, dl := range p.DialogueLines {
+			s := strings.TrimSpace(dl.Speaker)
+			if s == "" || seen[s] {
+				continue
+			}
+			seen[s] = true
+			chars = append(chars, domain.CharacterMeta{Name: s})
+		}
+	}
+	return chars
+}
+
 func normalizePanelSpeakers(panels []domain.Panel) []domain.Panel {
 	narratorLabels := map[string]bool{
 		"旁白": true, "narrator": true, "vo": true, "(vo)": true,

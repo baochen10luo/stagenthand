@@ -13,8 +13,11 @@ import (
 )
 
 var (
-	notionPushOutputDir  string
-	notionPushPageID     string
+	notionPushOutputDir string
+	notionPushPageID    string
+	notionPushAuthor    string
+	notionPushCategory  string
+	notionPushSynopsis  string
 )
 
 var notionPushCmd = &cobra.Command{
@@ -69,9 +72,20 @@ Does not wait for human approval — use rough-cut after reviewing in Notion.`,
 			}
 		}
 
+		// Merge CLI overrides into manifest metadata.
+		if notionPushAuthor != "" {
+			manifest.Author = notionPushAuthor
+		}
+		if notionPushCategory != "" {
+			manifest.Category = notionPushCategory
+		}
+		if notionPushSynopsis != "" {
+			manifest.Synopsis = notionPushSynopsis
+		}
+
 		// HITL with skipWait=true: upload rows, print story page URL, return immediately.
 		_, storyPageID, err := notion.HITL(cmd.Context(), manifest.Panels, imagePaths, coverImage,
-			manifest.StoryTitle, pageID, token, true)
+			manifest.StoryTitle, pageID, token, true, &manifest)
 		if err != nil {
 			return stageError("notion-push", "notion_error", err.Error())
 		}
@@ -94,5 +108,8 @@ func init() {
 		"project output directory containing storyboard_manifest.json")
 	notionPushCmd.Flags().StringVar(&notionPushPageID, "notion-page-id", "",
 		"Notion page ID (overrides NOTION_GROK_PAGE_ID env var)")
+	notionPushCmd.Flags().StringVar(&notionPushAuthor, "author", "", "story author name (overrides manifest)")
+	notionPushCmd.Flags().StringVar(&notionPushCategory, "category", "", "story category (overrides manifest)")
+	notionPushCmd.Flags().StringVar(&notionPushSynopsis, "synopsis", "", "story synopsis (overrides manifest)")
 	rootCmd.AddCommand(notionPushCmd)
 }

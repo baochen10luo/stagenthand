@@ -22,6 +22,7 @@ import (
 // HITL writes the panel storyboard to a Notion story sub-page, optionally waits for
 // user confirmation via stdin, then reads back any edits and returns the updated panels.
 // pageID is the parent (e.g. Phase-02) page that contains one child_page per story.
+// meta carries optional story metadata written as page header blocks (author, synopsis, etc.).
 // Returns the updated panels and the story sub-page ID.
 func HITL(
 	ctx context.Context,
@@ -32,6 +33,7 @@ func HITL(
 	pageID string,
 	token string,
 	skipWait bool,
+	meta *domain.StoryboardManifest,
 ) ([]domain.Panel, string, error) {
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "[Warning] NOTION_API_KEY is empty; skipping Notion HITL checkpoint")
@@ -44,6 +46,10 @@ func HITL(
 	storyPageID, err := findOrCreateStoryPage(ctx, pageID, token, storyTitle)
 	if err != nil {
 		return panels, "", err
+	}
+
+	if err := writeMetadataBlocks(ctx, storyPageID, token, meta, coverImage); err != nil {
+		fmt.Fprintf(os.Stderr, "[Warning] Notion metadata blocks: %v\n", err)
 	}
 
 	dbID, err := findOrCreateDatabase(ctx, storyPageID, token)
@@ -159,6 +165,129 @@ func panelSpeakers(panel domain.Panel) string {
 		}
 	}
 	return strings.Join(out, "、")
+}
+
+// ── metadata blocks ──────────────────────────────────────────────────────────
+
+// writeMetadataBlocks writes the story header (cover image, callout, synopsis,
+// characters, divider, 分鏡表 heading) to storyPageID. It is idempotent: if a
+// callout block already exists the function returns immediately without changes.
+// meta may be nil; individual fields are optional and omitted when empty.
+func writeMetadataBlocks(ctx context.Context, storyPageID, token string, meta *domain.StoryboardManifest, coverImage string) error {
+	// Idempotency: skip if any callout block already present.
+	blocks, err := listBlockChildren(ctx, storyPageID, token)
+	if err != nil {
+		return fmt.Errorf("list story page blocks: %w", err)
+	}
+	for _, b := range blocks {
+		if b.Type == "callout" {
+			return nil
+		}
+	}
+
+	// Upload cover image → set page banner + first image block.
+	coverFileID := ""
+	if coverImage != "" {
+		if fid, err := uploadImage(ctx, coverImage, token); err == nil {
+			coverFileID = fid
+			bannerBody, _ := json.Marshal(map[string]any{"cover": fileUploadPayload(coverFileID)})
+			if err := doJSON(ctx, http.MethodPatch, "https://api.notion.com/v1/pages/"+storyPageID, token, string(bannerBody), nil); err != nil {
+				fmt.Fprintf(os.Stderr, "[Warning] Notion page banner: %v\n", err)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[Warning] cover upload: %v\n", err)
+		}
+	}
+
+	var children []any
+
+	// Image block (first panel as visual header).
+	if coverFileID != "" {
+		children = append(children, map[string]any{
+			"type":  "image",
+			"image": fileUploadPayload(coverFileID),
+		})
+	}
+
+	// Callout with story metadata.
+	var calloutRT []map[string]any
+	if meta != nil {
+		if meta.Author != "" {
+			calloutRT = append(calloutRT, rtBold("作者："), rtPlain(meta.Author+"\n"))
+		}
+		if meta.Category != "" {
+			calloutRT = append(calloutRT, rtBold("分類："), rtPlain(meta.Category+"\n"))
+		}
+		lang := meta.Language
+		if lang == "" {
+			lang = "zh-TW"
+		}
+		calloutRT = append(calloutRT, rtBold("語言："), rtPlain(lang))
+		if meta.StylePrompt != "" {
+			calloutRT = append(calloutRT, rtPlain("\n"), rtBold("風格提詞："), rtPlain(meta.StylePrompt))
+		}
+	} else {
+		calloutRT = append(calloutRT, rtPlain("zh-TW"))
+	}
+	children = append(children, map[string]any{
+		"type": "callout",
+		"callout": map[string]any{
+			"rich_text": calloutRT,
+			"icon":      map[string]any{"type": "emoji", "emoji": "📖"},
+			"color":     "yellow_background",
+		},
+	})
+
+	// Synopsis section.
+	if meta != nil && meta.Synopsis != "" {
+		children = append(children,
+			map[string]any{"type": "heading_3", "heading_3": map[string]any{"rich_text": richTextPayload("故事簡介")}},
+			map[string]any{"type": "paragraph", "paragraph": map[string]any{"rich_text": richTextPayload(meta.Synopsis)}},
+		)
+	}
+
+	// Characters section.
+	if meta != nil && len(meta.Characters) > 0 {
+		children = append(children, map[string]any{
+			"type": "heading_3", "heading_3": map[string]any{"rich_text": richTextPayload("主要角色")},
+		})
+		for _, c := range meta.Characters {
+			line := c.Name
+			if c.Role != "" {
+				line += "（" + c.Role + "）"
+			}
+			if c.Description != "" {
+				line += " ── " + c.Description
+			}
+			children = append(children, map[string]any{
+				"type": "bulleted_list_item",
+				"bulleted_list_item": map[string]any{"rich_text": richTextPayload(line)},
+			})
+		}
+	}
+
+	// Divider + 分鏡表 heading.
+	children = append(children,
+		map[string]any{"type": "divider", "divider": map[string]any{}},
+		map[string]any{"type": "heading_3", "heading_3": map[string]any{"rich_text": richTextPayload("📽 分鏡表")}},
+	)
+
+	body, _ := json.Marshal(map[string]any{"children": children})
+	return doJSON(ctx, http.MethodPatch, "https://api.notion.com/v1/blocks/"+storyPageID+"/children", token, string(body), nil)
+}
+
+// rtBold returns a single bold rich-text item.
+func rtBold(s string) map[string]any {
+	return map[string]any{
+		"type": "text",
+		"text": map[string]any{"content": s},
+		"annotations": map[string]any{"bold": true},
+	}
+}
+
+// rtPlain returns a single plain rich-text item.
+func rtPlain(s string) map[string]any {
+	return map[string]any{"type": "text", "text": map[string]any{"content": s}}
 }
 
 // ── database management ───────────────────────────────────────────────────────

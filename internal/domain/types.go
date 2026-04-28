@@ -242,11 +242,24 @@ type RemotionProps struct {
 	Height     int         `json:"height"` // default 576
 }
 
+// CharacterMeta describes a character appearing in a story.
+type CharacterMeta struct {
+	Name        string `json:"name"`
+	Role        string `json:"role,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
 // StoryboardManifest is the intermediate artifact produced after image generation,
 // before Notion upload. Panels carry local image paths; audio will be regenerated
 // from Notion-edited dialogue at rough-cut time.
 type StoryboardManifest struct {
-	ProjectID  string  `json:"project_id"`
-	StoryTitle string  `json:"story_title"`
-	Panels     []Panel `json:"panels"`
+	ProjectID   string          `json:"project_id"`
+	StoryTitle  string          `json:"story_title"`
+	Author      string          `json:"author,omitempty"`
+	Synopsis    string          `json:"synopsis,omitempty"`
+	Category    string          `json:"category,omitempty"`
+	Language    string          `json:"language,omitempty"`
+	StylePrompt string          `json:"style_prompt,omitempty"`
+	Characters  []CharacterMeta `json:"characters,omitempty"`
+	Panels      []Panel         `json:"panels"`
 }
