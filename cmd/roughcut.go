@@ -190,7 +190,7 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 			if cfg != nil && cfg.Remotion.TemplatePath != "" {
 				templatePath = cfg.Remotion.TemplatePath
 			}
-			outputPath := filepath.Join(roughCutOutputDir, "rough_cut.mp4")
+			outputPath := filepath.Join(roughCutOutputDir, manifest.ProjectID+".mp4")
 			executor := remotion.NewCLIExecutorWithPublicDir(false, shandHome)
 			if renderErr := executor.Render(cmd.Context(), templatePath, "ShortDrama", propsPath, outputPath); renderErr != nil {
 				return stageError("rough-cut", "render_error", renderErr.Error())
@@ -198,11 +198,12 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 			fmt.Fprintf(os.Stderr, "[Info] 粗剪完成 → %s\n", outputPath)
 		}
 
+		outputFile := filepath.Join(roughCutOutputDir, manifest.ProjectID+".mp4")
 		result := map[string]any{
 			"project_id":  manifest.ProjectID,
 			"story_title": manifest.StoryTitle,
 			"panel_count": len(panels),
-			"props_path":  propsPath,
+			"output":      outputFile,
 			"bgm":         bgmURL != "",
 		}
 		return json.NewEncoder(os.Stdout).Encode(result)
