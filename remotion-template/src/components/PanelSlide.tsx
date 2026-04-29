@@ -238,7 +238,7 @@ export const PanelSlide: React.FC<{ panel: Panel; colorFilter?: string }> = ({ p
     return "";
   };
 
-  const hasTimedLines = (panel.dialogue_lines?.length ?? 0) > 0 && panel.dialogue_lines?.[0]?.start_sec !== undefined;
+  const hasTimedLines = (panel.dialogue_lines?.length ?? 0) > 0 && panel.dialogue_lines?.[0]?.end_sec !== undefined;
   const delay = Math.round(0.08 * fps);
   const rawText = hasTimedLines ? getActiveLine(panel.dialogue_lines) : sanitize(panel.dialogue);
   let subtitleText = rawText;
