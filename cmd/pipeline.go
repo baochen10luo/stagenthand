@@ -46,6 +46,7 @@ var (
 	pipelineImageDir     string // pre-existing image directory; skips image generation when set
 	pipelineTargetPanels int    // when > 0, LLM is instructed to generate exactly this many panels
 	pipelineI2V          bool   // image-to-video mode: use --image-dir illustrations as I2V references
+	pipelineFaithful     bool   // when true, LLM only splits original text — no invention or embellishment
 )
 
 var pipelineCmd = &cobra.Command{
@@ -116,14 +117,17 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	ckptRepo := store.NewGormCheckpointRepository(db)
 	ckptGate := pipeline.NewCheckpointGate(ckptRepo)
 
-	// Build audio client (Polly) with language support
-	audioClient := audio.NewPollyCLIClientWithLanguage(
-		cfg.LLM.AWSRegion, cfg.LLM.AWSAccessKeyID, cfg.LLM.AWSSecretAccessKey,
-		pipelineLanguage,
-	)
+	// Build audio client via factory (respects voice_provider config)
+	audioClient, err := audio.NewTTSClient(dryRun, cfg, pipelineLanguage)
+	if err != nil {
+		return fmt.Errorf("failed to create TTS client: %w", err)
+	}
 
-	// Build music client (Jamendo)
-	musicClient := audio.NewJamendoClient(cfg.Audio.JamendoClientID)
+	// Build music client via factory (respects music_provider config)
+	musicClient, err := audio.NewMusicClientFromConfig(dryRun, cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create music client: %w", err)
+	}
 
 	// Build critic evaluator if max retries > 0 and AWS credentials are available
 	var criticEvaluator pipeline.VideoCriticEvaluator
@@ -164,6 +168,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		SkipHITL:     pipelineSkipHITL,
 		Language:     pipelineLanguage,
 		TargetPanels: pipelineTargetPanels,
+		Faithful:     pipelineFaithful,
 	}
 	orch := pipeline.NewOrchestrator(deps)
 
@@ -213,10 +218,31 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 			return stageError("pipeline", "skip_llm_props_error", propsErr.Error())
 		}
 
+		bgmURL := existingProps.BGMURL
+		// Regenerate if the previously-recorded BGM file no longer exists on disk.
+		if bgmURL != "" {
+			absPath := filepath.Join(shandHome, bgmURL)
+			if info, err := os.Stat(absPath); err != nil || info.Size() == 0 {
+				bgmURL = ""
+			}
+		}
+		if bgmURL == "" && !dryRun && deps.Music != nil {
+			bgmTags := "cinematic"
+			if existingProps.Directives != nil && existingProps.Directives.BGMTags != "" {
+				bgmTags = existingProps.Directives.BGMTags
+			}
+			musicDir := fmt.Sprintf("projects/%s/audio", projectID)
+			if bgm, bgmErr := deps.Music.GenerateProjectBGM(context.Background(), projectID, bgmTags, musicDir); bgmErr != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  [Warning] BGM generation skipped: %v\n", bgmErr)
+			} else {
+				bgmURL = bgm
+			}
+		}
+
 		result = &pipeline.PipelineResult{
 			Storyboard: domain.Storyboard{
 				ProjectID:  projectID,
-				BGMURL:     existingProps.BGMURL,
+				BGMURL:     bgmURL,
 				Directives: existingProps.Directives,
 			},
 			Panels: panels,
@@ -512,6 +538,8 @@ func init() {
 		"target number of panels (0 = auto); used with --i2v to match illustration count")
 	pipelineCmd.Flags().BoolVar(&pipelineI2V, "i2v", false,
 		"image-to-video mode: skip cover image, use remaining --image-dir illustrations as I2V references in grok_browser stage")
+	pipelineCmd.Flags().BoolVar(&pipelineFaithful, "faithful", false,
+		"faithful mode: LLM only splits original text into scenes/panels — no invention or embellishment")
 	rootCmd.AddCommand(pipelineCmd)
 }
 

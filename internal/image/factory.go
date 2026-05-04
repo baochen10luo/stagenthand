@@ -23,6 +23,8 @@ func NewClientWithFormat(provider string, dryRun bool, cfg *config.Config, forma
 	width, height := format.Dimensions()
 
 	switch provider {
+	case "aiark":
+		return NewAiarkImageClient(cfg.Image.BaseURL, cfg.Image.APIKey, cfg.Image.Model, width, height), nil
 	case "nanobanana":
 		// Defaults to Zeabur proxy per memory rules.
 		// If Image API Config has a specific BaseURL we could pass it,

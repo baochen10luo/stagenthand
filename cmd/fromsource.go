@@ -24,9 +24,9 @@ var (
 	fromSourceColorFilter string
 )
 
-const fromSourceSystemPrompt = `你是影片字幕分段專家，專門處理繁體中文紀念短片腳本。
+const fromSourceSystemPrompt = `你是影片腳本分段專家，專門處理繁體中文紀念短片腳本。
 
-給定故事原文和圖片數量 N，將原文分成恰好 N 段，每段對應一張圖片。
+給定故事原文（不含標題）和圖片數量 N，將原文分成恰好 N 段，每段對應一張圖片。
 
 規則：
 1. 保留原始文字，禁止改寫或意譯
@@ -34,10 +34,9 @@ const fromSourceSystemPrompt = `你是影片字幕分段專家，專門處理繁
 3. 每段輸出：
    - tts_text：該段完整原文（供 TTS 朗讀，保持原話）
    - speaker：旁白留空 ""，引號內角色直接說話才填角色名
-   - subtitle_lines：2–3 條字幕，每條不超過 18 個中文字，直接從 tts_text 截取原文
 
 只輸出 JSON，不要加任何說明或 markdown，格式：
-{"panels":[{"tts_text":"...","speaker":"","subtitle_lines":["...","..."]}]}`
+{"panels":[{"tts_text":"...","speaker":""}]}`
 
 var fromSourceCmd = &cobra.Command{
 	Use:   "from-source",
@@ -58,6 +57,11 @@ var fromSourceCmd = &cobra.Command{
 		}
 		storyText := strings.TrimSpace(string(storyBytes))
 		storyTitle := strings.TrimSpace(strings.SplitN(storyText, "\n", 2)[0])
+		// Strip title line — send only the body to the LLM so panel 1 never includes the title.
+		storyBody := storyText
+		if idx := strings.Index(storyText, "\n"); idx != -1 {
+			storyBody = strings.TrimSpace(storyText[idx+1:])
+		}
 
 		// ── 2. Find + sort images ─────────────────────────────────────────
 		images, err := findNumberedImages(fromSourceStoryDir)
@@ -96,7 +100,7 @@ var fromSourceCmd = &cobra.Command{
 			return stageError("from-source", "llm_init", err.Error())
 		}
 
-		userInput := fmt.Sprintf("N: %d\n\n故事原文：\n%s", n, storyText)
+		userInput := fmt.Sprintf("N: %d\n\n故事原文（不含標題）：\n%s", n, storyBody)
 		fmt.Fprintf(os.Stderr, "[Info] calling LLM to segment %d panels...\n", n)
 
 		raw, err := llmClient.GenerateTransformation(cmd.Context(), fromSourceSystemPrompt, []byte(userInput))
@@ -107,12 +111,11 @@ var fromSourceCmd = &cobra.Command{
 		// ── 6. Parse LLM JSON ─────────────────────────────────────────────
 		var llmOut struct {
 			Panels []struct {
-				TTSText       string   `json:"tts_text"`
-				Speaker       string   `json:"speaker"`
-				SubtitleLines []string `json:"subtitle_lines"`
+				TTSText string `json:"tts_text"`
+				Speaker string `json:"speaker"`
 			} `json:"panels"`
 		}
-		clean := extractJSON(raw)
+		clean := extractJSONOrArray(raw)
 		if err := json.Unmarshal(clean, &llmOut); err != nil {
 			return stageError("from-source", "parse_error",
 				fmt.Sprintf("%v\nraw output: %s", err, string(raw)))
@@ -135,8 +138,9 @@ var fromSourceCmd = &cobra.Command{
 			idx := i + 1
 			motion := motions[i%len(motions)]
 
-			dlLines := make([]domain.DialogueLine, len(p.SubtitleLines))
-			for j, t := range p.SubtitleLines {
+			subtitleTexts := splitToSubtitleLines(p.TTSText)
+			dlLines := make([]domain.DialogueLine, len(subtitleTexts))
+			for j, t := range subtitleTexts {
 				dlLines[j] = domain.DialogueLine{Speaker: p.Speaker, Text: t, Emotion: "neutral"}
 			}
 
@@ -252,6 +256,93 @@ func copyFileBytes(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0644)
+}
+
+// splitToSubtitleLines splits tts text into subtitle segments (max 3).
+// Splits at sentence-end punctuation (。！？) first, merging into ≤3 groups.
+// Falls back to clause punctuation (，、；) then hard split.
+func splitToSubtitleLines(text string) []string {
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return nil
+	}
+	if len(runes) <= 22 {
+		return []string{text}
+	}
+	for _, breakSet := range []string{"。！？", "，、；"} {
+		segs := splitAtPunct(runes, breakSet)
+		if len(segs) >= 2 {
+			return mergeSegments(segs, 3)
+		}
+	}
+	return mergeSegments([]string{text}, 3)
+}
+
+// splitAtPunct splits runes at each occurrence of any char in breaks, keeping the punct.
+func splitAtPunct(runes []rune, breaks string) []string {
+	var segs []string
+	start := 0
+	for i, r := range runes {
+		if strings.ContainsRune(breaks, r) {
+			segs = append(segs, string(runes[start:i+1]))
+			start = i + 1
+		}
+	}
+	if start < len(runes) {
+		segs = append(segs, string(runes[start:]))
+	}
+	return segs
+}
+
+// mergeSegments merges a slice of segments into at most maxGroups groups,
+// combining consecutive segments of similar length.
+func mergeSegments(segs []string, maxGroups int) []string {
+	if len(segs) <= maxGroups {
+		return segs
+	}
+	// Greedily merge: combine smallest adjacent pair until len == maxGroups.
+	result := make([]string, len(segs))
+	copy(result, segs)
+	for len(result) > maxGroups {
+		// Find shortest adjacent pair to merge.
+		best, bestLen := 0, len([]rune(result[0]))+len([]rune(result[1]))
+		for i := 1; i < len(result)-1; i++ {
+			l := len([]rune(result[i])) + len([]rune(result[i+1]))
+			if l < bestLen {
+				best, bestLen = i, l
+			}
+		}
+		merged := result[best] + result[best+1]
+		result = append(result[:best], append([]string{merged}, result[best+2:]...)...)
+	}
+	return result
+}
+
+// extractJSONOrArray handles both {"panels":[...]} and bare [...] LLM responses.
+// If the outermost value is an array, it wraps it into {"panels":[...]}.
+func extractJSONOrArray(raw []byte) []byte {
+	s := bytes.TrimSpace(raw)
+	// Strip markdown fences
+	if i := bytes.Index(s, []byte("```")); i != -1 {
+		s = s[i:]
+		if j := bytes.Index(s[3:], []byte("```")); j != -1 {
+			s = s[3 : 3+j]
+			if nl := bytes.Index(s, []byte("\n")); nl != -1 {
+				s = bytes.TrimSpace(s[nl:])
+			}
+		}
+	}
+	s = bytes.TrimSpace(s)
+	if bytes.HasPrefix(s, []byte("[")) {
+		// Find matching closing bracket
+		start := bytes.IndexByte(s, '[')
+		end := bytes.LastIndexByte(s, ']')
+		if start != -1 && end > start {
+			return append([]byte(`{"panels":`), append(s[start:end+1], '}')...)
+		}
+	}
+	return extractJSON(raw)
 }
 
 // extractJSON strips markdown fences and returns the first JSON object found.

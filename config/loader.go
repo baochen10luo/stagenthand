@@ -38,7 +38,8 @@ type LLMConfig struct {
 type ImageConfig struct {
 	Provider         string `mapstructure:"provider"`
 	Model            string `mapstructure:"model"`
-	APIKey           string `mapstructure:"api_key"` // Alias for AccessKeyID in AWS
+	APIKey           string `mapstructure:"api_key"`
+	BaseURL          string `mapstructure:"base_url"`
 	SecretKey        string `mapstructure:"secret_key"`
 	Region           string `mapstructure:"region"`
 	Width            int    `mapstructure:"width"`
@@ -51,6 +52,14 @@ type AudioConfig struct {
 	VoiceProvider   string `mapstructure:"voice_provider"`
 	MusicProvider   string `mapstructure:"music_provider"`
 	JamendoClientID string `mapstructure:"jamendo_client_id"`
+	// aiark TTS (Qwen3-TTS)
+	AiarkTTSBaseURL string `mapstructure:"aiark_tts_base_url"`
+	AiarkTTSAPIKey  string `mapstructure:"aiark_tts_api_key"`
+	AiarkTTSVoice   string `mapstructure:"aiark_tts_voice"`
+	AiarkTTSVoiceID string `mapstructure:"aiark_tts_voice_id"` // voice clone ID (overrides voice name)
+	// aiark Music (ACE-Step)
+	AiarkMusicBaseURL string `mapstructure:"aiark_music_base_url"`
+	AiarkMusicAPIKey  string `mapstructure:"aiark_music_api_key"`
 }
 
 // VideoConfig holds video-generation provider settings.

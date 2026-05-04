@@ -101,10 +101,10 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 			pruneStaleAudio(manifest.Panels, panels, fullAudioDir)
 
 			// ── 4. Generate TTS audio ────────────────────────────────────────
-			audioClient := audio.NewPollyCLIClientWithLanguage(
-				cfg.LLM.AWSRegion, cfg.LLM.AWSAccessKeyID, cfg.LLM.AWSSecretAccessKey,
-				lang,
-			)
+			audioClient, err := audio.NewTTSClient(dryRun, cfg, lang)
+			if err != nil {
+				return stageError("rough-cut", "tts_init", err.Error())
+			}
 			audioBatcher := pipeline.NewAudioClientBatcher(audioClient, shandHome)
 
 			panels, err = audioBatcher.BatchGenerateAudio(cmd.Context(), panels, audioDir)
@@ -126,7 +126,10 @@ renders a first-pass MP4 for evaluation. No LLM calls; no image generation.`,
 				bgmURL = bgmPath
 				fmt.Fprintf(os.Stderr, "[Info] BGM reused: %s\n", bgmPath)
 			} else {
-				musicClient := audio.NewJamendoClient(cfg.Audio.JamendoClientID)
+				musicClient, err := audio.NewMusicClientFromConfig(dryRun, cfg)
+				if err != nil {
+					return stageError("rough-cut", "music_init", err.Error())
+				}
 				musicBatcher := pipeline.NewMusicClientBatcher(musicClient, shandHome)
 				bgm, bgmErr := musicBatcher.GenerateProjectBGM(cmd.Context(), manifest.ProjectID, manifest.BGMTags, audioDir)
 				if bgmErr != nil {

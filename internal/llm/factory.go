@@ -42,7 +42,7 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 	}
 
 	switch provider {
-	case "openai", "gemini":
+	case "openai", "openai-compat", "gemini":
 		model := ""
 		baseURL := ""
 		apiKey := ""

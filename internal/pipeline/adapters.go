@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -14,6 +15,19 @@ import (
 	"github.com/baochen10luo/stagenthand/internal/store"
 	"github.com/google/uuid"
 )
+
+var pngMagic = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+
+func isValidImageFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 8)
+	n, _ := f.Read(buf)
+	return n == 8 && bytes.Equal(buf, pngMagic)
+}
 
 // ImageClientBatcher adapts an image.Client into the ImageBatcher interface.
 // It generates images concurrently for each panel using the underlying client.
@@ -48,14 +62,15 @@ func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []d
 		filename := fmt.Sprintf("scene_%d_panel_%d.png", p.SceneNumber, p.PanelNumber)
 		absPath := filepath.Join(fullDir, filename)
 
-		// Resume Logic (Money-saving mechanism)
-		// If the file already exists and is not empty, skip generation.
-		if info, err := os.Stat(absPath); err == nil && info.Size() > 0 {
-			// Skip generation, just reuse existing file
+		// Resume: skip generation only if the file is a valid PNG (not a gateway error stub).
+		if info, err := os.Stat(absPath); err == nil && info.Size() > 0 && isValidImageFile(absPath) {
+			logStage("image", fmt.Sprintf("[%d/%d] scene%d-panel%d  SKIP (cached)", i+1, len(panels), p.SceneNumber, p.PanelNumber))
 			p.ImageURL = absPath
 			result[i] = p
 			continue
 		}
+
+		logStage("image", fmt.Sprintf("[%d/%d] scene%d-panel%d  generating...", i+1, len(panels), p.SceneNumber, p.PanelNumber))
 
 		if b.registry != nil {
 			for _, name := range p.Characters {
@@ -69,11 +84,15 @@ func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []d
 		if err != nil {
 			return nil, fmt.Errorf("panel %d-%d image gen failed: %w", p.SceneNumber, p.PanelNumber, err)
 		}
+		if len(imgBytes) < 8 || !bytes.Equal(imgBytes[:8], pngMagic) {
+			return nil, fmt.Errorf("panel %d-%d: image API returned non-PNG data (len=%d): %q", p.SceneNumber, p.PanelNumber, len(imgBytes), imgBytes)
+		}
 
 		if err := os.WriteFile(absPath, imgBytes, 0644); err != nil {
 			return nil, fmt.Errorf("failed to save image %s: %w", absPath, err)
 		}
 
+		logStage("image", fmt.Sprintf("[%d/%d] scene%d-panel%d  done  size=%dB", i+1, len(panels), p.SceneNumber, p.PanelNumber, len(imgBytes)))
 		p.ImageURL = absPath
 		result[i] = p
 	}
@@ -189,18 +208,35 @@ func (b *AudioClientBatcher) BatchGenerateAudio(ctx context.Context, panels []do
 	for i, p := range panels {
 		result[i] = p
 		if p.Dialogue == "" {
-			continue // skip panels without dialogue
-		}
-
-		filename := fmt.Sprintf("scene_%d_panel_%d.mp3", p.SceneNumber, p.PanelNumber)
-		absPath := filepath.Join(fullDir, filename)
-
-		// Resume Logic
-		if info, err := os.Stat(absPath); err == nil && info.Size() > 0 {
-			result[i].AudioURL = absPath
+			logStage("audio", fmt.Sprintf("[%d/%d] scene%d-panel%d  SKIP (no dialogue)", i+1, len(panels), p.SceneNumber, p.PanelNumber))
 			continue
 		}
 
+		ext := "mp3"
+		if ce, ok := b.client.(audio.ClientWithExt); ok {
+			ext = ce.FileExt()
+		}
+		filename := fmt.Sprintf("scene_%d_panel_%d.%s", p.SceneNumber, p.PanelNumber, ext)
+		absPath := filepath.Join(fullDir, filename)
+
+		// Resume Logic: also check the other common extension to handle provider switches.
+		if info, err := os.Stat(absPath); err == nil && info.Size() > 0 {
+			logStage("audio", fmt.Sprintf("[%d/%d] scene%d-panel%d  SKIP (cached)", i+1, len(panels), p.SceneNumber, p.PanelNumber))
+			result[i].AudioURL = absPath
+			continue
+		}
+		// Fallback: check the alternative extension so a provider switch doesn't break resume.
+		altExt := map[string]string{"mp3": "wav", "wav": "mp3"}[ext]
+		if altExt != "" {
+			altPath := filepath.Join(fullDir, fmt.Sprintf("scene_%d_panel_%d.%s", p.SceneNumber, p.PanelNumber, altExt))
+			if info, err := os.Stat(altPath); err == nil && info.Size() > 0 {
+				logStage("audio", fmt.Sprintf("[%d/%d] scene%d-panel%d  SKIP (cached alt ext)", i+1, len(panels), p.SceneNumber, p.PanelNumber))
+				result[i].AudioURL = altPath
+				continue
+			}
+		}
+
+		logStage("audio", fmt.Sprintf("[%d/%d] scene%d-panel%d  generating...", i+1, len(panels), p.SceneNumber, p.PanelNumber))
 		audioBytes, err := b.client.GenerateSpeech(ctx, p.Dialogue)
 		if err != nil {
 			return nil, fmt.Errorf("panel %d-%d audio gen failed: %w", p.SceneNumber, p.PanelNumber, err)
@@ -210,6 +246,7 @@ func (b *AudioClientBatcher) BatchGenerateAudio(ctx context.Context, panels []do
 			return nil, fmt.Errorf("failed to save audio %s: %w", absPath, err)
 		}
 
+		logStage("audio", fmt.Sprintf("[%d/%d] scene%d-panel%d  done  size=%dB", i+1, len(panels), p.SceneNumber, p.PanelNumber, len(audioBytes)))
 		result[i].AudioURL = absPath
 	}
 	return result, nil
@@ -234,11 +271,12 @@ func (b *MusicClientBatcher) GenerateProjectBGM(ctx context.Context, projectID s
 		return "", fmt.Errorf("failed to create music dir %s: %w", fullDir, err)
 	}
 
-	filename := "bgm.mp3"
-	absPath := filepath.Join(fullDir, filename)
-
-	if info, err := os.Stat(absPath); err == nil && info.Size() > 0 {
-		return absPath, nil
+	// Check for existing bgm in both mp3 and wav (provider may have changed).
+	for _, ext := range []string{"mp3", "wav"} {
+		candidate := filepath.Join(fullDir, "bgm."+ext)
+		if info, err := os.Stat(candidate); err == nil && info.Size() > 0 {
+			return candidate, nil
+		}
 	}
 
 	if baseTag == "" {
@@ -249,6 +287,13 @@ func (b *MusicClientBatcher) GenerateProjectBGM(ctx context.Context, projectID s
 	if err != nil {
 		return "", fmt.Errorf("bgm gen failed: %w", err)
 	}
+
+	// Detect actual format from magic bytes to choose the right extension.
+	ext := "mp3"
+	if len(audioBytes) >= 4 && string(audioBytes[:4]) == "RIFF" {
+		ext = "wav"
+	}
+	absPath := filepath.Join(fullDir, "bgm."+ext)
 
 	if err := os.WriteFile(absPath, audioBytes, 0644); err != nil {
 		return "", fmt.Errorf("failed to save bgm %s: %w", absPath, err)

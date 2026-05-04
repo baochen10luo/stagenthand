@@ -4,12 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
 )
+
+func logStage(stage, msg string) {
+	fmt.Fprintf(os.Stderr, "[%s] %-28s %s\n", time.Now().Format("15:04:05"), "["+stage+"]", msg)
+}
 
 // ImageBatcher generates images for a batch of panels.
 // Extracted as interface to honour ISP — orchestrator only needs batch generation.
@@ -81,6 +87,7 @@ type OrchestratorDeps struct {
 	TargetPanels int                  // when > 0, LLM is instructed to generate exactly this many panels
 	DryRun       bool
 	SkipHITL     bool
+	Faithful     bool // when true, LLM only splits original text — no invention
 }
 
 // Orchestrator coordinates the full shand pipeline:
@@ -110,17 +117,22 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 		return nil, fmt.Errorf("input data is empty")
 	}
 
+	logStage("pipeline", "start")
+
 	// 1. Detection: Is this already a flat list of panels (RemotionProps)?
 	var props domain.RemotionProps
 	if jsonUnmarshal(inputData, &props) == nil && len(props.Panels) > 0 {
+		logStage("pipeline", "input detected as RemotionProps, skipping LLM stages")
 		return o.executeFromPanels(ctx, props.ProjectID, props.Title, props.Panels, props.BGMURL, props.Directives, nil)
 	}
 
 	// 2. Normal flow: Resolve to a Storyboard
+	logStage("story→storyboard", "start")
 	storyboard, err := o.resolveToStoryboard(ctx, inputData)
 	if err != nil {
 		return nil, err
 	}
+	logStage("story→storyboard", fmt.Sprintf("done  project=%s scenes=%d", storyboard.ProjectID, len(storyboard.Scenes)))
 
 	// HITL: review storyboard before generating panels/images
 	if err := o.checkpoint(ctx, "pipeline", domain.StageStoryboard); err != nil {
@@ -128,10 +140,12 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 	}
 
 	// 3. Storyboard -> Panels
+	logStage("storyboard→panels", "start")
 	panels, err := o.transformStoryboardToPanels(ctx, storyboard)
 	if err != nil {
 		return nil, fmt.Errorf("panels stage failed: %w", err)
 	}
+	logStage("storyboard→panels", fmt.Sprintf("done  panels=%d", len(panels)))
 
 	// 3.5 PropsCritic: validate panels, retry once if issues found
 	if o.deps.PropsCritic != nil {
@@ -190,12 +204,14 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 
 	// 3. Generate images for panels
 	if !o.deps.DryRun {
+		logStage("images", fmt.Sprintf("start  panels=%d", len(panels)))
 		// Target directory for images: projects/<project_id>/images/
 		targetDir := fmt.Sprintf("projects/%s/images", projectID)
 		panels, err = o.deps.Images.BatchGenerateImages(ctx, panels, targetDir)
 		if err != nil {
 			return nil, fmt.Errorf("image stage failed: %w", err)
 		}
+		logStage("images", "done")
 	}
 
 	// HITL: images checkpoint
@@ -246,6 +262,7 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 
 	// 4. Generate audio (TTS) for panels
 	if !o.deps.DryRun && o.deps.Audio != nil {
+		logStage("audio/TTS", "start")
 		audioDir := fmt.Sprintf("projects/%s/audio", projectID)
 		panels, err = o.deps.Audio.BatchGenerateAudio(ctx, panels, audioDir)
 		if err != nil {
@@ -254,10 +271,12 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 		// Correct DurationSec to match real audio length, then re-compute subtitle timings.
 		panels = extendDurationIfAudioLonger(panels)
 		panels = applySubtitleTimings(panels)
+		logStage("audio/TTS", "done")
 	}
 
 	// 5. Generate BGM
 	if !o.deps.DryRun && o.deps.Music != nil {
+		logStage("bgm", "start")
 		musicDir := fmt.Sprintf("projects/%s/audio", projectID)
 
 		bgmTags := "cinematic"
@@ -267,9 +286,10 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 
 		bgm, err := o.deps.Music.GenerateProjectBGM(ctx, projectID, bgmTags, musicDir)
 		if err != nil {
-			fmt.Printf("⚠️  [Warning] BGM generation skipped: %v\n", err)
+			fmt.Fprintf(os.Stderr, "⚠️  [Warning] BGM generation skipped: %v\n", err)
 		} else {
 			bgmURL = bgm
+			logStage("bgm", fmt.Sprintf("done  path=%s", bgm))
 		}
 	}
 
@@ -303,11 +323,13 @@ func (o *Orchestrator) resolveToStoryboard(ctx context.Context, input []byte) (d
 
 func (o *Orchestrator) transformStory(ctx context.Context, story []byte) (domain.Storyboard, error) {
 	// Story -> Outline
+	logStage("story→outline", "start  (LLM)")
 	outlinePrompt := langInstruction(o.deps.Language) + PromptStoryToOutline
 	outlineJSON, err := o.deps.LLM.GenerateTransformation(ctx, outlinePrompt, story)
 	if err != nil {
 		return domain.Storyboard{}, fmt.Errorf("story-to-outline failed: %w", err)
 	}
+	logStage("story→outline", "done")
 
 	// HITL: review outline before generating storyboard
 	if err := o.checkpoint(ctx, "pipeline", domain.StageOutline); err != nil {
@@ -319,11 +341,17 @@ func (o *Orchestrator) transformStory(ctx context.Context, story []byte) (domain
 }
 
 func (o *Orchestrator) transformOutline(ctx context.Context, outline []byte) (domain.Storyboard, error) {
-	storyboardPrompt := langInstruction(o.deps.Language) + PromptOutlineToStoryboard
+	logStage("outline→storyboard", "start  (LLM)")
+	sbPrompt := PromptOutlineToStoryboard
+	if o.deps.Faithful {
+		sbPrompt = PromptFaithfulOutlineToStoryboard
+	}
+	storyboardPrompt := langInstruction(o.deps.Language) + sbPrompt
 	storyboardJSON, err := o.deps.LLM.GenerateTransformation(ctx, storyboardPrompt, outline)
 	if err != nil {
 		return domain.Storyboard{}, fmt.Errorf("outline-to-storyboard failed: %w", err)
 	}
+	logStage("outline→storyboard", "done")
 
 	var sb domain.Storyboard
 	if err := jsonUnmarshal(storyboardJSON, &sb); err != nil {
@@ -333,10 +361,16 @@ func (o *Orchestrator) transformOutline(ctx context.Context, outline []byte) (do
 }
 
 func (o *Orchestrator) transformStoryboardToPanels(ctx context.Context, sb domain.Storyboard) ([]domain.Panel, error) {
+	logStage("storyboard→panels", "start  (LLM)")
 	input, _ := jsonMarshal(sb)
 
-	// Build language-aware prompt
-	prompt := buildStoryboardToPanelsPrompt(o.deps.Language, sb, o.deps.TargetPanels)
+	// Build language-aware prompt (faithful mode uses stricter prompt)
+	var prompt string
+	if o.deps.Faithful {
+		prompt = buildFaithfulStoryboardToPanelsPrompt(o.deps.Language, sb, o.deps.TargetPanels)
+	} else {
+		prompt = buildStoryboardToPanelsPrompt(o.deps.Language, sb, o.deps.TargetPanels)
+	}
 	panelsJSON, err := o.deps.LLM.GenerateTransformation(ctx, prompt, input)
 	if err != nil {
 		return nil, err

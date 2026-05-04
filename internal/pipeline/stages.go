@@ -149,10 +149,17 @@ func BuildStoryboardToPanelsPrompt(language string, sb domain.Storyboard) string
 	return buildStoryboardToPanelsPrompt(language, sb, 0)
 }
 
+// buildFaithfulStoryboardToPanelsPrompt is like buildStoryboardToPanelsPrompt but uses the faithful prompt.
+func buildFaithfulStoryboardToPanelsPrompt(language string, sb domain.Storyboard, targetPanels int) string {
+	return buildPromptWithBase(PromptFaithfulStoryboardToPanels, language, sb, targetPanels)
+}
+
 // buildStoryboardToPanelsPrompt returns the PromptStoryboardToPanels with optional language instruction appended.
 func buildStoryboardToPanelsPrompt(language string, sb domain.Storyboard, targetPanels int) string {
-	base := PromptStoryboardToPanels
+	return buildPromptWithBase(PromptStoryboardToPanels, language, sb, targetPanels)
+}
 
+func buildPromptWithBase(base, language string, sb domain.Storyboard, targetPanels int) string {
 	// Check language from storyboard directives first, then from orchestrator deps language
 	lang := language
 	if sb.Directives != nil && sb.Directives.Language != "" {
@@ -301,5 +308,100 @@ CRITICAL DIALOGUE FORMAT RULES:
 - WRONG:     "dialogue": "VO (Narrator): '在一個珍惜傳統的世界裡...'"
 - WRONG:     "dialogue": "奶奶: '啊，你來了！'"
 - WRONG:     "dialogue": "Panel 1: \"VO (Alex): '...'\""
+- The "speaker" field in dialogue_lines is the correct place to record who is speaking.`
+
+	// PromptFaithfulOutlineToStoryboard is used when --faithful flag is set.
+	// The LLM must not invent or add anything — only split the original text into scenes.
+	PromptFaithfulOutlineToStoryboard = `You are a storyboard director. Convert the input outline JSON into a scene-by-scene storyboard JSON.
+STRICT RULE: Do NOT invent, add, or rewrite any story content. Do not create voiceovers, dialogues, or emotional commentary that are not in the original text. Your only job is to divide the original content into scenes — use the original wording as-is.
+Output JSON MUST follow this schema:
+{
+  "project_id": "...",
+  "episode": 1,
+  "characters": [
+    {
+      "name": "角色名",
+      "role": "主角 / 配角 / 反派 / 旁白（功能描述）",
+      "description": "外貌、年齡、個性的一句話描述"
+    }
+  ],
+  "directives": {
+    "style_prompt": "YOUR_ACTUAL_STYLE_PROMPT_HERE (e.g., 'photorealistic cyberpunk, dark noir')",
+    "color_filter": "cinematic",
+    "bgm_tags": "suspense+dark+ambient"
+  },
+  "scenes": [
+    {
+      "number": 1,
+      "description": "..."
+    }
+  ]
+}
+
+CHARACTER RULES:
+- List every named character who appears or speaks in the story.
+- "role" should be the character's narrative function, e.g. "男主角", "女主角的母親", "反派老闆", "旁白".
+- "description" should be one sentence covering appearance, age, and defining personality trait.
+- Do NOT list unnamed extras or background characters.`
+
+	// PromptFaithfulStoryboardToPanels is used when --faithful flag is set.
+	PromptFaithfulStoryboardToPanels = `You are a visual panel designer and cinematographer. Convert the input storyboard JSON into a detailed panel-by-panel generation JSON.
+Target total video length: approximately 30–50 seconds. Use 4–7 panels maximum.
+Each panel's 'duration_sec' should reflect the time needed to naturally speak the dialogue aloud PLUS viewer breathing time. Estimate ~0.12 seconds per character.
+STRICT RULE: Every 'dialogue' field and every narration line MUST be taken directly from the original story text — verbatim or minimal paraphrase only. Do NOT write new sentences or add content not present in the original. If a panel has no spoken dialogue, quote a sentence from the original text as the narration.
+Each panel should have at most one primary speaker. Split multi-speaker exchanges into separate panels.
+
+SPEAKER RULES (strictly enforced):
+- Narration / voice-over: use speaker: "" (empty string). NEVER use "旁白", "VO", "narrator", or any other label.
+- Character dialogue: use the character's actual name only when they speak aloud to another person.
+- When in doubt, use speaker: "" (narration is far more common in memoir/documentary stories).
+
+Output JSON MUST follow this schema:
+{
+  "project_id": "...",
+  "episode": 1,
+  "panels": [
+    {
+      "scene_number": 1,
+      "panel_number": 1,
+      "description": "...",
+      "dialogue": "...",
+      "dialogue_lines": [
+        {"speaker": "", "text": "旁白內容"},
+        {"speaker": "角色名", "text": "對白內容"}
+      ],
+      "character_refs": [],
+      "duration_sec": 4.0,
+      "directive": {
+        "motion_effect": "ken_burns_in",
+        "motion_intensity": 0.05,
+        "transition_in": "fade",
+        "transition_out": "fade",
+        "subtitle_effect": "fade",
+        "subtitle_position": "bottom"
+      }
+    }
+  ]
+}
+
+DIRECTOR RULES — You are the cinematographer. Vary motion and transitions to match the scene's emotional beat:
+
+motion_effect choices (pick based on scene type):
+- "ken_burns_in"  → slow zoom in: intimacy, revelation, tension building
+- "ken_burns_out" → slow zoom out: establishing shot, loneliness, ending, wide context
+- "pan_left"      → lateral pan left: movement, departure, searching
+- "pan_right"     → lateral pan right: arrival, discovery, following action
+- "static"        → no movement: shock, confrontation, held breath moment
+
+motion_intensity: 0.03–0.08 (subtle = 0.03, dramatic = 0.08)
+
+transition_in choices: "fade" | "cut" | "dissolve" | "wipe_left"
+subtitle_effect: "fade" | "typewriter" | "none"
+subtitle_position: "bottom" (default) | "top" | "center"
+
+CRITICAL DIALOGUE FORMAT RULES:
+- The "dialogue" field and every "text" field inside "dialogue_lines" MUST contain ONLY the spoken words themselves.
+- Do NOT include speaker names, character prefixes, "VO:", "VO (Name):", or "Panel N:" prefixes anywhere in these fields.
+- Do NOT wrap the text in quotes.
 - The "speaker" field in dialogue_lines is the correct place to record who is speaking.`
 )

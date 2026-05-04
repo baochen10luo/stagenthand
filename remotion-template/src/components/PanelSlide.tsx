@@ -105,7 +105,7 @@ const D: Required<PanelDirective> = {
   transition_out: "fade",
   transition_duration_ms: 400,
   subtitle_effect: "fade",
-  subtitle_font_size: 38,
+  subtitle_font_size: 28,
   subtitle_position: "bottom",
   bg_style: "fullbleed",
   text_x: "center",
@@ -275,38 +275,36 @@ export const PanelSlide: React.FC<{ panel: Panel; colorFilter?: string }> = ({ p
     const base: React.CSSProperties = {
       position: "absolute",
       opacity: subOp,
-      color: textColor,
+      color: "#FFFFFF",
       fontSize,
       fontWeight: 500,
       fontFamily,
-      textAlign: dir.text_x === "left" ? "left" : dir.text_x === "right" ? "right" : "center",
-      maxWidth: "78%",
-      textShadow: textShadowStyle,
-      lineHeight: 1.7,
-      whiteSpace: "pre-wrap",
-      letterSpacing: "0.05em",
+      textAlign: "center",
+      width: "92%",
+      boxSizing: "border-box",
+      backgroundColor: "rgba(0,0,0,0.58)",
+      borderRadius: 10,
+      padding: "8px 18px",
+      lineHeight: 1.65,
+      whiteSpace: "normal",
+      wordBreak: "break-all",
+      letterSpacing: "0.04em",
+      textShadow: "0 1px 4px rgba(0,0,0,0.5)",
     };
     // X
-    if (dir.text_x === "left") { base.left = "8%"; base.transform = `rotate(${dir.text_rotate}deg)`; }
-    else if (dir.text_x === "right") { base.right = "8%"; base.transform = `rotate(${dir.text_rotate}deg)`; }
+    if (dir.text_x === "left") { base.left = "6%"; base.transform = `rotate(${dir.text_rotate}deg)`; }
+    else if (dir.text_x === "right") { base.right = "6%"; base.transform = `rotate(${dir.text_rotate}deg)`; }
     else { base.left = "50%"; base.transform = `translateX(-50%) rotate(${dir.text_rotate}deg)`; }
     // Y
-    if (dir.text_y === "top") base.top = "10%";
-    else if (dir.text_y === "middle") base.top = "40%";
-    else base.bottom = "10%";
+    if (dir.text_y === "top") base.top = "8%";
+    else if (dir.text_y === "middle") base.top = "42%";
+    else base.bottom = "8%";
     return base;
   };
 
   const TextNode = subtitleText ? (
     <div style={buildTextStyle()}>
       {subtitleText}
-      <div style={{
-        height: 2,
-        backgroundColor: "rgba(255,255,255,0.9)",
-        boxShadow: "0 0 8px rgba(255,255,255,0.7)",
-        width: `${underlineW}%`,
-        margin: "5px auto 0",
-      }} />
     </div>
   ) : null;
 
