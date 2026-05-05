@@ -105,8 +105,9 @@ func Load(cfgFile string) (*Config, error) {
 	v := viper.New()
 
 	// Defaults
-	v.SetDefault("llm.provider", "openai")
-	v.SetDefault("llm.model", "gpt-4o")
+	v.SetDefault("llm.provider", "openai-compat")
+	v.SetDefault("llm.base_url", "https://lms.datasys.com.tw/v1")
+	v.SetDefault("llm.model", "qwen3.6-35b-a3b")
 	v.SetDefault("llm.aws_region", "us-east-1")
 	v.SetDefault("image.provider", "nanobanana")
 	v.SetDefault("image.model", "amazon.titan-image-generator-v2:0")

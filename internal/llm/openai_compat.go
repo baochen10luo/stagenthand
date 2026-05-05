@@ -5,10 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 )
+
+var reThinkTag = regexp.MustCompile(`(?s)<think>.*?</think>`)
+
+// stripThinkTags removes <think>...</think> reasoning blocks emitted by
+// thinking-mode models (e.g. Qwen3) before the pipeline tries to JSON-parse
+// the content.
+func stripThinkTags(s string) string {
+	return strings.TrimSpace(reThinkTag.ReplaceAllString(s, ""))
+}
 
 // OpenAICompatibleClient connects (via a proxy or standard endpoint)
 // to generate text output for our pipeline steps.
@@ -143,7 +154,11 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 			return nil, errors.New("API returned empty choices or content")
 		}
 
-		return []byte(resBody.Choices[0].Message.Content), nil
+		content := stripThinkTags(resBody.Choices[0].Message.Content)
+		if content == "" {
+			return nil, errors.New("API returned only thinking content with no JSON body")
+		}
+		return []byte(content), nil
 	}
 
 	return nil, fmt.Errorf("LLM 重試 %d 次仍失敗: %w", llmRetryMax, lastErr)
