@@ -46,10 +46,13 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 		model := ""
 		baseURL := ""
 		apiKey := ""
+		var opts ClientOptions
 		if cfg != nil {
 			model = cfg.LLM.Model
 			baseURL = cfg.LLM.BaseURL
 			apiKey = cfg.LLM.APIKey
+			opts.NoJSONMode = cfg.LLM.NoJSONMode
+			opts.StripThinkTags = cfg.LLM.StripThinkTags
 		}
 		if model == "" {
 			if provider == "gemini" {
@@ -58,7 +61,7 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 				model = "gpt-4o"
 			}
 		}
-		return NewOpenAICompatibleClient(baseURL, apiKey, model), nil
+		return NewOpenAICompatibleClientWithOptions(baseURL, apiKey, model, opts), nil
 	case "anthropic":
 		model := "claude-sonnet-4-6"
 		apiKey := ""

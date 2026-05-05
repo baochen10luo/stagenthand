@@ -24,10 +24,12 @@ type Config struct {
 
 // LLMConfig holds language-model provider settings.
 type LLMConfig struct {
-	Provider string `mapstructure:"provider"`
-	Model    string `mapstructure:"model"`
-	APIKey   string `mapstructure:"api_key"`
-	BaseURL  string `mapstructure:"base_url"`
+	Provider       string `mapstructure:"provider"`
+	Model          string `mapstructure:"model"`
+	APIKey         string `mapstructure:"api_key"`
+	BaseURL        string `mapstructure:"base_url"`
+	NoJSONMode     bool   `mapstructure:"no_json_mode"` // disable response_format:json_object (for servers that don't support it)
+	StripThinkTags bool   `mapstructure:"strip_think_tags"` // strip <think>...</think> from responses (for reasoning models)
 	// AWS Bedrock specific
 	AWSAccessKeyID     string `mapstructure:"aws_access_key_id"`
 	AWSSecretAccessKey string `mapstructure:"aws_secret_access_key"`
@@ -105,9 +107,8 @@ func Load(cfgFile string) (*Config, error) {
 	v := viper.New()
 
 	// Defaults
-	v.SetDefault("llm.provider", "openai-compat")
-	v.SetDefault("llm.base_url", "https://lms.datasys.com.tw/v1")
-	v.SetDefault("llm.model", "qwen3.6-35b-a3b")
+	v.SetDefault("llm.provider", "openai")
+	v.SetDefault("llm.model", "gpt-4o")
 	v.SetDefault("llm.aws_region", "us-east-1")
 	v.SetDefault("image.provider", "nanobanana")
 	v.SetDefault("image.model", "amazon.titan-image-generator-v2:0")

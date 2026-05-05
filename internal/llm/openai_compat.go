@@ -6,36 +6,48 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 )
 
-var reThinkTag = regexp.MustCompile(`(?s)<think>.*?</think>`)
+var reThinkBlock = regexp.MustCompile(`(?s)<think>.*?</think>`)
 
-// stripThinkTags removes <think>...</think> reasoning blocks emitted by
-// thinking-mode models (e.g. Qwen3) before the pipeline tries to JSON-parse
-// the content.
+// stripThinkTags removes <think>...</think> blocks produced by reasoning models
+// (e.g. Qwen3, QwQ) so the remaining content can be parsed as plain JSON.
 func stripThinkTags(s string) string {
-	return strings.TrimSpace(reThinkTag.ReplaceAllString(s, ""))
+	return reThinkBlock.ReplaceAllString(s, "")
 }
 
 // OpenAICompatibleClient connects (via a proxy or standard endpoint)
 // to generate text output for our pipeline steps.
 type OpenAICompatibleClient struct {
-	client *resty.Client
-	apiKey string
-	model  string
+	client         *resty.Client
+	apiKey         string
+	model          string
+	noJSONMode     bool // skip response_format:json_object (servers that reject it)
+	stripThinkTags bool // strip <think>…</think> from reasoning-model responses
+}
+
+// ClientOptions configures optional behaviour of OpenAICompatibleClient.
+type ClientOptions struct {
+	ExtraHeaders   map[string]string
+	NoJSONMode     bool // skip response_format:json_object
+	StripThinkTags bool // strip <think>…</think> blocks
 }
 
 // NewOpenAICompatibleClient handles exponential backoff and sets up resty.
 func NewOpenAICompatibleClient(baseURL, apiKey, model string) *OpenAICompatibleClient {
-	return NewOpenAICompatibleClientWithHeaders(baseURL, apiKey, model, nil)
+	return NewOpenAICompatibleClientWithOptions(baseURL, apiKey, model, ClientOptions{})
 }
 
 // NewOpenAICompatibleClientWithHeaders creates a client with additional request headers.
 func NewOpenAICompatibleClientWithHeaders(baseURL, apiKey, model string, extraHeaders map[string]string) *OpenAICompatibleClient {
+	return NewOpenAICompatibleClientWithOptions(baseURL, apiKey, model, ClientOptions{ExtraHeaders: extraHeaders})
+}
+
+// NewOpenAICompatibleClientWithOptions is the canonical constructor.
+func NewOpenAICompatibleClientWithOptions(baseURL, apiKey, model string, opts ClientOptions) *OpenAICompatibleClient {
 	if baseURL == "" {
 		baseURL = "https://pgb.zeabur.app/v1"
 	}
@@ -47,14 +59,16 @@ func NewOpenAICompatibleClientWithHeaders(baseURL, apiKey, model string, extraHe
 		SetBaseURL(baseURL).
 		SetTimeout(1800 * time.Second)
 
-	for k, v := range extraHeaders {
+	for k, v := range opts.ExtraHeaders {
 		r.SetHeader(k, v)
 	}
 
 	return &OpenAICompatibleClient{
-		client: r,
-		apiKey: apiKey,
-		model:  model,
+		client:         r,
+		apiKey:         apiKey,
+		model:          model,
+		noJSONMode:     opts.NoJSONMode,
+		stripThinkTags: opts.StripThinkTags,
 	}
 }
 
@@ -72,12 +86,13 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 		Content string `json:"content"`
 	}
 
+	type ResponseFormat struct {
+		Type string `json:"type"`
+	}
 	type ChatRequest struct {
-		Model          string    `json:"model"`
-		ResponseFormat *struct {
-			Type string `json:"type"`
-		} `json:"response_format,omitempty"`
-		Messages []Message `json:"messages"`
+		Model          string          `json:"model"`
+		ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+		Messages       []Message       `json:"messages"`
 	}
 
 	type ChatResponse struct {
@@ -91,13 +106,13 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 
 	reqBody := ChatRequest{
 		Model: c.model,
-		ResponseFormat: &struct {
-			Type string `json:"type"`
-		}{Type: "json_object"},
 		Messages: []Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: string(inputData)},
 		},
+	}
+	if !c.noJSONMode {
+		reqBody.ResponseFormat = &ResponseFormat{Type: "json_object"}
 	}
 
 	var lastErr error
@@ -154,9 +169,9 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 			return nil, errors.New("API returned empty choices or content")
 		}
 
-		content := stripThinkTags(resBody.Choices[0].Message.Content)
-		if content == "" {
-			return nil, errors.New("API returned only thinking content with no JSON body")
+		content := resBody.Choices[0].Message.Content
+		if c.stripThinkTags {
+			content = stripThinkTags(content)
 		}
 		return []byte(content), nil
 	}
