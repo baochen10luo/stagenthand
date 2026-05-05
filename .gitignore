@@ -1,5 +1,7 @@
 # Build
 shand
+/ccimg
+/ccimgd
 dist/
 
 # Config & secrets
@@ -37,3 +39,7 @@ shand
 .gobuild/
 debug_test_main.go
 config.yaml
+
+# Local tooling cache & Claude worktrees
+.cache/
+.claude/

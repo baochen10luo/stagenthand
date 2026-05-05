@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/baochen10luo/stagenthand/internal/audio"
@@ -207,7 +208,26 @@ func (b *AudioClientBatcher) BatchGenerateAudio(ctx context.Context, panels []do
 	result := make([]domain.Panel, len(panels))
 	for i, p := range panels {
 		result[i] = p
-		if p.Dialogue == "" {
+
+		// Derive spoken text: prefer p.Dialogue; fall back to dialogue_lines text
+		// (LLM sometimes fills dialogue_lines but leaves dialogue empty).
+		spokenText := p.Dialogue
+		if spokenText == "" && len(p.DialogueLines) > 0 {
+			var parts []string
+			for _, dl := range p.DialogueLines {
+				t := strings.TrimSpace(dl.Text)
+				// Skip stage directions wrapped in full-width or ASCII parentheses.
+				if strings.HasPrefix(t, "（") || strings.HasPrefix(t, "(") {
+					continue
+				}
+				if t != "" {
+					parts = append(parts, t)
+				}
+			}
+			spokenText = strings.Join(parts, " ")
+		}
+
+		if spokenText == "" {
 			logStage("audio", fmt.Sprintf("[%d/%d] scene%d-panel%d  SKIP (no dialogue)", i+1, len(panels), p.SceneNumber, p.PanelNumber))
 			continue
 		}
@@ -237,7 +257,7 @@ func (b *AudioClientBatcher) BatchGenerateAudio(ctx context.Context, panels []do
 		}
 
 		logStage("audio", fmt.Sprintf("[%d/%d] scene%d-panel%d  generating...", i+1, len(panels), p.SceneNumber, p.PanelNumber))
-		audioBytes, err := b.client.GenerateSpeech(ctx, p.Dialogue)
+		audioBytes, err := b.client.GenerateSpeech(ctx, spokenText)
 		if err != nil {
 			return nil, fmt.Errorf("panel %d-%d audio gen failed: %w", p.SceneNumber, p.PanelNumber, err)
 		}

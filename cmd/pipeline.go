@@ -239,6 +239,18 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 			}
 		}
 
+		// Generate TTS audio for panels (skip-llm reuses images but regenerates audio).
+		if !dryRun && deps.Audio != nil {
+			audioDir := fmt.Sprintf("projects/%s/audio", projectID)
+			if audioedPanels, audioErr := deps.Audio.BatchGenerateAudio(context.Background(), panels, audioDir); audioErr != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  [Warning] TTS generation failed: %v\n", audioErr)
+			} else {
+				panels = audioedPanels
+				panels = pipeline.ApplyRealAudioDuration(panels)
+				panels = pipeline.ApplySubtitleTimings(panels)
+			}
+		}
+
 		result = &pipeline.PipelineResult{
 			Storyboard: domain.Storyboard{
 				ProjectID:  projectID,
