@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Skills
+
+Workflow knowledge lives in `.agents/skills/` (symlinked from `.claude/skills/`). Load `aiark-pipeline` before any pipeline work; load `remotion` before any Remotion/video rendering work.
+
 ## Commands
 
 ```bash
