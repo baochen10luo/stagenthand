@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/baochen10luo/stagenthand/config"
 	"github.com/baochen10luo/stagenthand/internal/pipeline"
@@ -33,6 +34,20 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 						{"scene_number": 1, "panel_number": 1, "description": "生鏽的機器人在鋼鐵廢墟中漫步", "dialogue": "今天也是安靜的一天...", "character_refs": [], "duration_sec": 3.0},
 						{"scene_number": 2, "panel_number": 1, "description": "瓦礫堆中一朵發光的小花", "dialogue": "那是...什麼？", "character_refs": [], "duration_sec": 4.0},
 						{"scene_number": 3, "panel_number": 1, "description": "機器人捧著小花，背景是巨大的夕陽", "dialogue": "真美。", "character_refs": [], "duration_sec": 3.5}
+					]}`), nil
+				}
+				// Verbatim mode: single-pass story -> panels (prompt includes langInstruction prefix)
+				if strings.Contains(systemPrompt, pipeline.PromptVerbatimStoryToPanels) {
+					return []byte(`{"project_id": "dry-run-verbatim", "directives": {"style_prompt": "flat 2D cartoon, warm colors", "color_filter": "cinematic", "bgm_tags": "ambient"}, "panels": [
+						{"scene_number": 1, "panel_number": 1, "description": "mock verbatim panel 1", "dialogue": "", "dialogue_lines": [{"speaker": "", "text": "mock text 1"}], "character_refs": [], "duration_sec": 4.0, "directive": {"motion_effect": "ken_burns_in", "motion_intensity": 0.05, "transition_in": "fade", "transition_out": "fade", "subtitle_effect": "fade", "subtitle_position": "bottom"}},
+						{"scene_number": 1, "panel_number": 2, "description": "mock verbatim panel 2", "dialogue": "", "dialogue_lines": [{"speaker": "", "text": "mock text 2"}], "character_refs": [], "duration_sec": 4.0, "directive": {"motion_effect": "static", "motion_intensity": 0.05, "transition_in": "fade", "transition_out": "fade", "subtitle_effect": "fade", "subtitle_position": "bottom"}}
+					]}`), nil
+				}
+				// Narration mode: single-pass story -> panels (prompt includes langInstruction prefix)
+				if strings.Contains(systemPrompt, pipeline.PromptNarrationStoryToPanels) {
+					return []byte(`{"project_id": "dry-run-narration", "directives": {"style_prompt": "flat 2D cartoon, warm colors", "color_filter": "cinematic", "bgm_tags": "ambient"}, "panels": [
+						{"scene_number": 1, "panel_number": 1, "description": "mock narration panel 1", "dialogue": "", "dialogue_lines": [{"speaker": "", "text": "mock narration text 1"}], "character_refs": [], "duration_sec": 4.0, "directive": {"motion_effect": "ken_burns_in", "motion_intensity": 0.05, "transition_in": "fade", "transition_out": "fade", "subtitle_effect": "fade", "subtitle_position": "bottom"}},
+						{"scene_number": 1, "panel_number": 2, "description": "mock narration panel 2", "dialogue": "", "dialogue_lines": [{"speaker": "", "text": "mock narration text 2"}], "character_refs": [], "duration_sec": 4.0, "directive": {"motion_effect": "static", "motion_intensity": 0.05, "transition_in": "fade", "transition_out": "fade", "subtitle_effect": "fade", "subtitle_position": "bottom"}}
 					]}`), nil
 				}
 				// Default catch-all
