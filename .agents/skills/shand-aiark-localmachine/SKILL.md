@@ -1,5 +1,5 @@
 ---
-name: aiark-pipeline
+name: shand-aiark-localmachine
 description: Run shand video pipeline on aiark server — pre-flight, narration/verbatim/standard modes, clean-cache workflow, SCP to MacBook
 metadata:
   tags: pipeline, video, aiark, shand
