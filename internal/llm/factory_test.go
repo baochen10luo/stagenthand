@@ -70,11 +70,13 @@ func TestNewClient(t *testing.T) {
 
 	t.Run("bedrock provider with valid creds", func(t *testing.T) {
 		bedrockCfg := &config.Config{
+			AWS: config.AWSConfig{
+				AccessKeyID:     "AKIATEST",
+				SecretAccessKey: "secretkey",
+				Region:          "us-east-1",
+			},
 			LLM: config.LLMConfig{
-				AWSAccessKeyID:     "AKIATEST",
-				AWSSecretAccessKey: "secretkey",
-				AWSRegion:          "us-east-1",
-				Model:              "amazon.nova-pro-v1:0",
+				Model: "amazon.nova-pro-v1:0",
 			},
 		}
 		client, err := llm.NewClient("bedrock", false, bedrockCfg)
@@ -84,9 +86,9 @@ func TestNewClient(t *testing.T) {
 
 	t.Run("bedrock provider missing access key returns error", func(t *testing.T) {
 		bedrockCfg := &config.Config{
-			LLM: config.LLMConfig{
-				AWSSecretAccessKey: "secretkey",
-				AWSRegion:          "us-east-1",
+			AWS: config.AWSConfig{
+				SecretAccessKey: "secretkey",
+				Region:          "us-east-1",
 			},
 		}
 		client, err := llm.NewClient("bedrock", false, bedrockCfg)
@@ -96,9 +98,9 @@ func TestNewClient(t *testing.T) {
 
 	t.Run("bedrock provider missing secret key returns error", func(t *testing.T) {
 		bedrockCfg := &config.Config{
-			LLM: config.LLMConfig{
-				AWSAccessKeyID: "AKIATEST",
-				AWSRegion:      "us-east-1",
+			AWS: config.AWSConfig{
+				AccessKeyID: "AKIATEST",
+				Region:      "us-east-1",
 			},
 		}
 		client, err := llm.NewClient("bedrock", false, bedrockCfg)

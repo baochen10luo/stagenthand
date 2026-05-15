@@ -123,8 +123,9 @@ func TestImageClientBatcher_Resume(t *testing.T) {
 	}
 
 	fakeFile := filepath.Join(cacheDir, "scene_1_panel_1.png")
-	// pre-populate file
-	os.WriteFile(fakeFile, []byte("fake"), 0644)
+	// pre-populate file with valid PNG magic bytes so isValidImageFile returns true.
+	pngMagic := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	os.WriteFile(fakeFile, pngMagic, 0644)
 
 	// Since we mock it, if GenerateImage is called it will fail because client is nil here, but we shouldn't reach it.
 	batcher := pipeline.NewImageClientBatcher(nil, tmpDir)

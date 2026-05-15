@@ -111,14 +111,9 @@ var postprodEvaluateCmd = &cobra.Command{
 			return fmt.Errorf("--video and --props are required")
 		}
 
-		bedrockClient, err := llm.NewBedrockClient(
-			cfg.LLM.AWSAccessKeyID,
-			cfg.LLM.AWSSecretAccessKey,
-			cfg.LLM.AWSRegion,
-			"amazon.nova-pro-v1:0",
-		)
+		criticClient, err := llm.NewVideoCriticClient(cfg)
 		if err != nil {
-			return fmt.Errorf("create bedrock client: %w", err)
+			return fmt.Errorf("create critic client: %w", err)
 		}
 
 		propsBytes, err := os.ReadFile(postprodPropsPath)
@@ -126,7 +121,7 @@ var postprodEvaluateCmd = &cobra.Command{
 			return fmt.Errorf("read props file: %w", err)
 		}
 
-		critic := video.NewCritic(bedrockClient)
+		critic := video.NewCritic(criticClient)
 		evaluator := &criticEvaluatorAdapter{critic: critic}
 
 		eval, err := evaluator.Evaluate(cmd.Context(), postprodVideoPath, propsBytes)
@@ -266,29 +261,24 @@ var postprodLoopCmd = &cobra.Command{
 		}
 
 		// Build evaluator
-		bedrockClient, err := llm.NewBedrockClient(
-			cfg.LLM.AWSAccessKeyID,
-			cfg.LLM.AWSSecretAccessKey,
-			cfg.LLM.AWSRegion,
-			"amazon.nova-pro-v1:0",
-		)
+		criticClient, err := llm.NewVideoCriticClient(cfg)
 		if err != nil {
-			return fmt.Errorf("create bedrock client: %w", err)
+			return fmt.Errorf("create critic client: %w", err)
 		}
-		critic := video.NewCritic(bedrockClient)
+		critic := video.NewCritic(criticClient)
 		evaluator := &criticEvaluatorAdapter{critic: critic}
 
-		// Build planner (uses a separate Bedrock client for text generation)
-		plannerLLMClient, err := llm.NewBedrockClient(
-			cfg.LLM.AWSAccessKeyID,
-			cfg.LLM.AWSSecretAccessKey,
-			cfg.LLM.AWSRegion,
-			"amazon.nova-pro-v1:0",
-		)
+		// Build planner — needs text generation (llm.Client), not video review.
+		// Uses the main LLM provider so any backend works.
+		llmProvider := "mock"
+		if cfg != nil && cfg.LLM.Provider != "" {
+			llmProvider = cfg.LLM.Provider
+		}
+		plannerClient, err := llm.NewClient(llmProvider, dryRun, cfg)
 		if err != nil {
 			return fmt.Errorf("create planner llm client: %w", err)
 		}
-		planner := postprod.NewLLMEditPlanner(plannerLLMClient)
+		planner := postprod.NewLLMEditPlanner(plannerClient)
 
 		// Build applier
 		applier := postprod.NewDefaultEditApplier()
@@ -462,9 +452,9 @@ var postprodTranslateSubtitleCmd = &cobra.Command{
 
 			// Build audio batcher and regenerate
 			audioClient := audio.NewPollyCLIClientWithLanguage(
-				cfg.LLM.AWSRegion,
-				cfg.LLM.AWSAccessKeyID,
-				cfg.LLM.AWSSecretAccessKey,
+				cfg.AWS.Region,
+				cfg.AWS.AccessKeyID,
+				cfg.AWS.SecretAccessKey,
 				targetLang,
 			)
 			rootDir := filepath.Dir(audioDir)

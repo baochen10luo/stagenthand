@@ -88,6 +88,8 @@ type OrchestratorDeps struct {
 	DryRun       bool
 	SkipHITL     bool
 	Faithful     bool // when true, LLM only splits original text — no invention
+	Verbatim     bool // when true, single-pass LLM only segments text verbatim; skips outline/storyboard stages
+	Narration    bool // when true, single-pass LLM rewrites story as narrator voice; all speaker: ""
 }
 
 // Orchestrator coordinates the full shand pipeline:
@@ -124,6 +126,28 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 	if jsonUnmarshal(inputData, &props) == nil && len(props.Panels) > 0 {
 		logStage("pipeline", "input detected as RemotionProps, skipping LLM stages")
 		return o.executeFromPanels(ctx, props.ProjectID, props.Title, props.Panels, props.BGMURL, props.Directives, nil)
+	}
+
+	// 1b. Verbatim mode: single-pass LLM segments raw text, skips outline/storyboard.
+	if o.deps.Verbatim && !isJSON(inputData) {
+		logStage("story→panels", "start  (verbatim)")
+		projectID, panels, directives, err := o.singlePassStoryToPanels(ctx, string(inputData), buildVerbatimStoryToPanelsPrompt(o.deps.Language))
+		if err != nil {
+			return nil, fmt.Errorf("verbatim story-to-panels failed: %w", err)
+		}
+		logStage("story→panels", fmt.Sprintf("done  panels=%d", len(panels)))
+		return o.executeFromPanels(ctx, projectID, "", panels, "", directives, nil)
+	}
+
+	// 1c. Narration mode: single-pass LLM rewrites story as narrator voice, skips outline/storyboard.
+	if o.deps.Narration && !isJSON(inputData) {
+		logStage("story→panels", "start  (narration)")
+		projectID, panels, directives, err := o.singlePassStoryToPanels(ctx, string(inputData), buildNarrationStoryToPanelsPrompt(o.deps.Language))
+		if err != nil {
+			return nil, fmt.Errorf("narration story-to-panels failed: %w", err)
+		}
+		logStage("story→panels", fmt.Sprintf("done  panels=%d", len(panels)))
+		return o.executeFromPanels(ctx, projectID, "", panels, "", directives, nil)
 	}
 
 	// 2. Normal flow: Resolve to a Storyboard
@@ -608,4 +632,37 @@ func normalizePanelSpeakers(panels []domain.Panel) []domain.Panel {
 		}
 	}
 	return panels
+}
+
+// isJSON returns true if data looks like a JSON object or array.
+func isJSON(data []byte) bool {
+	for _, b := range data {
+		if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+			continue
+		}
+		return b == '{' || b == '['
+	}
+	return false
+}
+
+// singlePassStoryToPanels calls LLM once with the given prompt, skipping the
+// outline/storyboard multi-stage expansion. Used by verbatim and narration modes.
+func (o *Orchestrator) singlePassStoryToPanels(ctx context.Context, storyText string, prompt string) (projectID string, panels []domain.Panel, directives *domain.Directives, err error) {
+	raw, err := o.deps.LLM.GenerateTransformation(ctx, prompt, []byte(storyText))
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	var result struct {
+		ProjectID  string             `json:"project_id"`
+		Directives *domain.Directives `json:"directives"`
+		Panels     []domain.Panel     `json:"panels"`
+	}
+	if err := jsonUnmarshal(raw, &result); err != nil {
+		return "", nil, nil, fmt.Errorf("LLM produced invalid JSON: %w", err)
+	}
+	if len(result.Panels) == 0 {
+		return "", nil, nil, fmt.Errorf("LLM produced no panels")
+	}
+	return result.ProjectID, cleanPanels(result.Panels), result.Directives, nil
 }

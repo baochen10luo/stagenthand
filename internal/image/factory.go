@@ -39,8 +39,8 @@ func NewClientWithFormat(provider string, dryRun bool, cfg *config.Config, forma
 		switch {
 		case strings.HasPrefix(model, "amazon.nova-canvas"):
 			return NewNovaCanvasClient(
-				cfg.LLM.AWSAccessKeyID,
-				cfg.LLM.AWSSecretAccessKey,
+				cfg.AWS.AccessKeyID,
+				cfg.AWS.SecretAccessKey,
 				region,
 				model,
 				width,
@@ -49,8 +49,8 @@ func NewClientWithFormat(provider string, dryRun bool, cfg *config.Config, forma
 			)
 		case strings.HasPrefix(model, "amazon.titan-image-generator"):
 			return NewTitanImageClient(
-				cfg.LLM.AWSAccessKeyID,
-				cfg.LLM.AWSSecretAccessKey,
+				cfg.AWS.AccessKeyID,
+				cfg.AWS.SecretAccessKey,
 				region,
 				model,
 				width,
@@ -65,8 +65,8 @@ func NewClientWithFormat(provider string, dryRun bool, cfg *config.Config, forma
 			model = "stability.stable-image-ultra-v1:1"
 		}
 		return NewStabilityClient(
-			cfg.LLM.AWSAccessKeyID,
-			cfg.LLM.AWSSecretAccessKey,
+			cfg.AWS.AccessKeyID,
+			cfg.AWS.SecretAccessKey,
 			imageRegionForModel(cfg, model),
 			model,
 			width,
@@ -81,11 +81,11 @@ func imageRegionForModel(cfg *config.Config, model string) string {
 	if cfg != nil && cfg.Image.Region != "" {
 		return cfg.Image.Region
 	}
-	if cfg != nil && cfg.LLM.AWSRegion != "" {
+	if cfg != nil && cfg.AWS.Region != "" {
 		if strings.HasPrefix(model, "amazon.titan-image-generator") {
 			return "us-west-2"
 		}
-		return cfg.LLM.AWSRegion
+		return cfg.AWS.Region
 	}
 	if strings.HasPrefix(model, "amazon.titan-image-generator") {
 		return "us-west-2"

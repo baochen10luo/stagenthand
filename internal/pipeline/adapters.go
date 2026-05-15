@@ -17,17 +17,54 @@ import (
 	"github.com/google/uuid"
 )
 
-var pngMagic = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+var (
+	pngMagic  = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	jpegMagic = []byte{0xFF, 0xD8, 0xFF}
+	webpRiff  = []byte{'R', 'I', 'F', 'F'}
+	webpTag   = []byte{'W', 'E', 'B', 'P'}
+)
 
+// isValidImageFile returns true if the file at path begins with a recognised
+// image signature (PNG, JPEG, or WebP). This is provider-agnostic — the batcher
+// accepts any format the image client returns.
 func isValidImageFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	buf := make([]byte, 8)
+	buf := make([]byte, 12)
 	n, _ := f.Read(buf)
-	return n == 8 && bytes.Equal(buf, pngMagic)
+	return isValidImageBytes(buf[:n])
+}
+
+// isValidImageBytes returns true when b starts with a known image magic sequence.
+func isValidImageBytes(b []byte) bool {
+	if len(b) >= 8 && bytes.Equal(b[:8], pngMagic) {
+		return true
+	}
+	if len(b) >= 3 && bytes.Equal(b[:3], jpegMagic) {
+		return true
+	}
+	if len(b) >= 12 && bytes.Equal(b[:4], webpRiff) && bytes.Equal(b[8:12], webpTag) {
+		return true
+	}
+	return false
+}
+
+// detectImageExt returns the file extension (with leading dot) for the given bytes.
+// Falls back to ".png" when the format is unrecognised.
+func detectImageExt(b []byte) string {
+	if len(b) >= 8 && bytes.Equal(b[:8], pngMagic) {
+		return ".png"
+	}
+	if len(b) >= 3 && bytes.Equal(b[:3], jpegMagic) {
+		return ".jpg"
+	}
+	if len(b) >= 12 && bytes.Equal(b[:4], webpRiff) && bytes.Equal(b[8:12], webpTag) {
+		return ".webp"
+	}
+	return ".png"
 }
 
 // ImageClientBatcher adapts an image.Client into the ImageBatcher interface.
@@ -60,13 +97,18 @@ func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []d
 
 	result := make([]domain.Panel, len(panels))
 	for i, p := range panels {
-		filename := fmt.Sprintf("scene_%d_panel_%d.png", p.SceneNumber, p.PanelNumber)
-		absPath := filepath.Join(fullDir, filename)
-
-		// Resume: skip generation only if the file is a valid PNG (not a gateway error stub).
-		if info, err := os.Stat(absPath); err == nil && info.Size() > 0 && isValidImageFile(absPath) {
+		// Resume: check all supported image extensions (provider may have changed).
+		var cachedPath string
+		for _, ext := range []string{".png", ".jpg", ".jpeg", ".webp"} {
+			candidate := filepath.Join(fullDir, fmt.Sprintf("scene_%d_panel_%d%s", p.SceneNumber, p.PanelNumber, ext))
+			if info, err := os.Stat(candidate); err == nil && info.Size() > 0 && isValidImageFile(candidate) {
+				cachedPath = candidate
+				break
+			}
+		}
+		if cachedPath != "" {
 			logStage("image", fmt.Sprintf("[%d/%d] scene%d-panel%d  SKIP (cached)", i+1, len(panels), p.SceneNumber, p.PanelNumber))
-			p.ImageURL = absPath
+			p.ImageURL = cachedPath
 			result[i] = p
 			continue
 		}
@@ -85,15 +127,17 @@ func (b *ImageClientBatcher) BatchGenerateImages(ctx context.Context, panels []d
 		if err != nil {
 			return nil, fmt.Errorf("panel %d-%d image gen failed: %w", p.SceneNumber, p.PanelNumber, err)
 		}
-		if len(imgBytes) < 8 || !bytes.Equal(imgBytes[:8], pngMagic) {
-			return nil, fmt.Errorf("panel %d-%d: image API returned non-PNG data (len=%d): %q", p.SceneNumber, p.PanelNumber, len(imgBytes), imgBytes)
+		if len(imgBytes) < 3 || !isValidImageBytes(imgBytes) {
+			return nil, fmt.Errorf("panel %d-%d: image API returned unrecognised data (len=%d): %q", p.SceneNumber, p.PanelNumber, len(imgBytes), imgBytes)
 		}
 
+		ext := detectImageExt(imgBytes)
+		absPath := filepath.Join(fullDir, fmt.Sprintf("scene_%d_panel_%d%s", p.SceneNumber, p.PanelNumber, ext))
 		if err := os.WriteFile(absPath, imgBytes, 0644); err != nil {
 			return nil, fmt.Errorf("failed to save image %s: %w", absPath, err)
 		}
 
-		logStage("image", fmt.Sprintf("[%d/%d] scene%d-panel%d  done  size=%dB", i+1, len(panels), p.SceneNumber, p.PanelNumber, len(imgBytes)))
+		logStage("image", fmt.Sprintf("[%d/%d] scene%d-panel%d  done  size=%dB ext=%s", i+1, len(panels), p.SceneNumber, p.PanelNumber, len(imgBytes), ext))
 		p.ImageURL = absPath
 		result[i] = p
 	}

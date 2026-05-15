@@ -46,34 +46,55 @@ Converged mp4
 
 ### LLM 支援
 
-三個提供商開箱即用，優先順序：flag > 環境變數 > config 檔 > 預設值。
+所有 provider 可熱切換，只需改 config，不需要動程式碼。優先順序：flag > 環境變數 > config 檔 > 預設值。
 
-| 提供商 | 設定值 |
-|---|---|
-| AWS Bedrock (Claude / Nova) | `llm.provider: bedrock` |
-| OpenAI 相容（Gemini、本地端） | `llm.provider: openai` 或 `gemini` |
-| Google Gemini | `llm.provider: gemini` |
+| 提供商 | 設定值 | 備注 |
+|---|---|---|
+| 本地 / 自架（Qwen3、vLLM、LM Studio） | `llm.provider: openai` | 預設；設定 `base_url` 指向端點 |
+| OpenAI | `llm.provider: openai` | 設定 `api_key` |
+| Google Gemini | `llm.provider: gemini` | 設定 `api_key` |
+| Anthropic Claude | `llm.provider: anthropic` | 設定 `api_key` 或 `ANTHROPIC_API_KEY` |
+| AWS Bedrock (Nova、Claude) | `llm.provider: bedrock` | 使用共用 `aws:` 憑證 |
 
 ### 圖像生成
 
-兩個圖像提供商。Nano Banana 2 支援角色參考圖保持跨鏡頭一致性；Nova Canvas 為 AWS Bedrock 選項。
+透過 `image.provider` 可熱切換；回傳格式（PNG / JPEG / WebP）由 magic bytes 自動偵測，不強制格式。
 
-| 提供商 | 設定值 |
-|---|---|
-| Nano Banana 2（基於 Gemini） | `image.provider: nanobanana` |
-| AWS Nova Canvas | `image.provider: nova` |
+| 提供商 | 設定值 | 備注 |
+|---|---|---|
+| aiark (Qwen2.5-VL) | `image.provider: aiark` | 自架；設定 `image.base_url` |
+| Nano Banana 2 | `image.provider: nanobanana` | 基於 Gemini；支援角色參考圖 |
+| AWS Nova Canvas | `image.provider: bedrock` + `image.model: amazon.nova-canvas-*` | 使用共用 `aws:` 憑證 |
+| AWS Titan | `image.provider: bedrock` + `image.model: amazon.titan-image-generator-*` | 使用共用 `aws:` 憑證 |
+| Stability AI | `image.provider: stability` | 透過 Bedrock；使用共用 `aws:` 憑證 |
 
 ### 語音合成
 
-Amazon Polly Neural（Zhiyu 中文語音）。對白自動包裝成 SSML；偵測 `Whisper:` 標記並轉為 Polly 悄聲效果；語速鎖定 90% 避免急促感。
+TTS provider 透過 `audio.voice_provider` 熱切換。
+
+| 提供商 | 設定值 | 備注 |
+|---|---|---|
+| Amazon Polly Neural | `voice_provider: polly` | 預設；多語言、SSML |
+| aiark TTS (Qwen3-TTS) | `voice_provider: aiark` | 自架；設定 `aiark_tts_base_url` |
+
+多語者模式（`--multi-speaker`）根據角色登錄為每條 `DialogueLine` 路由不同聲線。
 
 ### 背景音樂
 
-整合 Jamendo API，由 `BGMTags` directive 驅動（如 `cinematic+dark`）。自動搜索、選取第一首並下載 MP3。
+BGM provider 透過 `audio.music_provider` 熱切換。
+
+| 提供商 | 設定值 |
+|---|---|
+| Jamendo | `music_provider: jamendo`（預設） |
+| aiark Music (ACE-Step) | `music_provider: aiark` |
 
 ### AI 評審
 
-使用 Amazon Nova Pro 多模態模型對渲染後的 MP4 進行評審。4 個維度評分，強制閾值：視覺 ≥ 8、音視頻同步 ≥ 8、總分 ≥ 32/40。
+使用多模態 LLM 評審渲染後的 MP4。評審 provider 透過 `critic.provider` 獨立設定，與生成 LLM 解耦。4 個維度評分，強制閾值：視覺 ≥ 8、音視頻同步 ≥ 8、總分 ≥ 32/40。
+
+| 提供商 | 設定值 |
+|---|---|
+| AWS Bedrock Nova Pro | `critic.provider: bedrock`（預設） |
 
 | 維度 | 說明 |
 |---|---|
@@ -228,31 +249,48 @@ cat remotion_props.json | ./shand remotion-render --output ./final.mp4
 預設配置路徑：`~/.shand/config.yaml`。環境變數使用 `SHAND_` 前綴（如 `SHAND_LLM_API_KEY`）。CLI flag 優先級最高。
 
 ```yaml
+# 所有 AWS 後端 provider 共用的憑證
+# （Bedrock LLM、Polly TTS、Nova Canvas/Titan 圖像、Nova Reel 影片、Stability）
+# 舊版 llm.aws_* 鍵仍可使用，向下相容。
+aws:
+  access_key_id: ""
+  secret_access_key: ""
+  region: us-east-1
+
 llm:
-  provider: bedrock          # bedrock | openai | gemini
-  model: amazon.nova-pro-v1:0
-  aws_access_key_id: ""
-  aws_secret_access_key: ""
-  aws_region: us-east-1
-  # For openai/gemini:
-  # api_key: ${GOOGLE_API_KEY}
-  # base_url: ""             # Leave empty for default; any OpenAI-compatible URL works
+  provider: openai           # openai | gemini | anthropic | bedrock
+  model: ""                  # 空值 = provider 預設（gpt-4o / gemini-2.5-pro 等）
+  api_key: ""
+  base_url: ""               # 任何 OpenAI-compatible 端點；空值 = 官方 API
+  no_json_mode: false        # 不支援 response_format:json 的伺服器請設 true
+  strip_think_tags: false    # 推理模型（Qwen3、QwQ）輸出 <think> 時請設 true
 
 image:
-  provider: nanobanana        # nanobanana | nova
-  api_key: ${GOOGLE_API_KEY}
+  provider: nanobanana        # nanobanana | aiark | bedrock | stability
+  api_key: ""
+  base_url: ""               # aiark 自架端點
+  model: ""                  # bedrock 用：amazon.nova-canvas-* 或 amazon.titan-image-*
   width: 1024
   height: 576
-  # For nova (AWS Bedrock):
-  # provider: nova
-  # access_key_id: ""
-  # secret_key: ""
-  # region: us-east-1
+  region: ""                 # 圖像專用 region 覆寫（預設使用 aws.region）
 
 audio:
-  voice_provider: polly       # polly (default)
-  music_provider: jamendo     # jamendo (default)
-  jamendo_client_id: ""       # Leave empty to use public test key
+  voice_provider: polly       # polly | aiark
+  music_provider: jamendo     # jamendo | aiark
+  jamendo_client_id: ""
+  # aiark TTS（自架 Qwen3-TTS）：
+  # aiark_tts_base_url: ""
+  # aiark_tts_api_key: ""
+  # aiark_tts_voice: ""
+
+critic:
+  provider: bedrock           # bedrock（預設）；未來：anthropic、gemini
+  model: ""                   # 空值 = amazon.nova-pro-v1:0
+
+video:
+  provider: remotion          # remotion | nova_reel | grok_browser | hyperframes
+  s3_bucket: ""               # nova_reel 必填
+  region: ""                  # 影片專用 region 覆寫
 
 remotion:
   template_path: ./remotion-template
@@ -265,7 +303,7 @@ store:
   db_path: ~/.shand/shand.db
 
 server:
-  port: 28080                 # HTTP API for agent / Discord bot checkpoint approval
+  port: 28080                 # HTTP API 供 agent / Discord bot 批准 checkpoint
 ```
 
 ---
@@ -315,6 +353,12 @@ server:
 | `--episodes N` | `pipeline` | 批量生成 N 集 |
 | `--batch-concurrency` | `pipeline` | 最大並發集數（預設 2） |
 | `--max-iterations` | `postprod loop` | 後製循環最大次數（預設 3） |
+| `--faithful` | `pipeline` | LLM 僅拆分原文，不進行創作 |
+| `--verbatim` | `pipeline` | 單次 LLM：逐字切割，跳過 outline/storyboard |
+| `--narration` | `pipeline` | 單次 LLM：改寫為旁白語氣，所有 speaker 設為空值 |
+| `--multi-speaker` | `pipeline` | 依角色 Registry 路由不同聲線 |
+| `--format portrait` | `pipeline` | 垂直 9:16 影片（TikTok / Reels / Shorts） |
+| `--video-backend` | `pipeline` | 影片渲染後端：remotion \| nova_reel \| grok_browser \| hyperframes |
 
 ---
 
@@ -326,18 +370,49 @@ server:
 cmd/                   Thin layer: IO + dependency injection
 internal/
   domain/              Pure data structs, zero external dependencies
-  llm/                 LLMClient interface + Bedrock / OpenAI-compatible / Mock
-  image/               ImageClient interface + NanoBanana / NovaCanvas / Mock
-  audio/               Polly TTS + Jamendo BGM client
-  video/               AI Critic (Nova Pro multimodal)
+  llm/                 Client interface + factory（openai-compat / bedrock / anthropic / mock）
+                       VideoCriticClient interface + NewVideoCriticClient factory
+  image/               Client interface + factory（aiark / nanobanana / bedrock / stability / mock）
+  audio/               Client interface + factory（polly / aiark-tts / mock）
+                       MusicClient interface + factory（jamendo / aiark-music / mock）
+                       MultiSpeakerClient interface + factory
+  video/               Critic（多模態評審，透過 llm.VideoCriticClient）
   store/               Repository pattern: JobRepo + CheckpointRepo (SQLite/gorm)
   notify/              Notifier interface + Discord webhook
   remotion/            RemotionExecutor interface + exec npx remotion
   character/           角色 Registry：儲存參考圖，確保跨鏡頭一致性
   postprod/            Agentic 後製：planner、applier、自動循環
-  pipeline/            Orchestrator — depends on all interfaces only
+  pipeline/            Orchestrator — 僅依賴 interface，從不依賴具體 provider
 config/                viper loader: flag > env > yaml > defaults
+                       aws:    所有 AWS 後端 provider 共用憑證
+                       critic: 影片評審獨立模型設定
 remotion-template/     React + Remotion (ShortDrama composition)
+```
+
+### Provider 熱切換
+
+切換任何 provider 只需修改 config，無需改程式碼：
+
+```yaml
+# 從本地 Qwen3 切換到 Anthropic：
+llm:
+  provider: anthropic
+  api_key: sk-ant-...
+
+# 從 Nano Banana 切換到 aiark 圖像：
+image:
+  provider: aiark
+  base_url: http://aiark.internal:8080
+
+# 從 Polly 切換到 aiark TTS：
+audio:
+  voice_provider: aiark
+  aiark_tts_base_url: http://aiark.internal:7860
+
+# 評審模型與生成模型各自獨立設定：
+critic:
+  provider: bedrock
+  model: amazon.nova-pro-v1:0
 ```
 
 ### SOLID 原則對照
@@ -345,9 +420,9 @@ remotion-template/     React + Remotion (ShortDrama composition)
 | 原則 | 實作方式 |
 |---|---|
 | 單一職責 | 每個套件只負責一個領域 |
-| 開放封閉 | 新提供商 = 實作 interface，不動其他程式碼 |
+| 開放封閉 | 新提供商 = 實作 interface + 新增 factory case，不動其他程式碼 |
 | 里氏替換 | 每個 Mock 都是即插即用的替換，行為契約相同 |
-| 介面隔離 | `LLMClient`、`ImageClient`、`AudioBatcher`、`MusicBatcher` 各自獨立 |
+| 介面隔離 | `LLMClient`、`VideoCriticClient`、`ImageClient`、`AudioBatcher`、`MusicBatcher` 各自獨立 |
 | 依賴反轉 | `cmd/` 依賴 interface；具體型別透過建構子注入 |
 
 ---
@@ -404,6 +479,7 @@ echo "story text" \
 | Phase 10c | 完成 | 系列連續性（滑動視窗記憶） |
 | Phase 10.0 | 完成 | 結構化 `DialogueLine`（多角色 TTS 前置） |
 | Phase 10.1 | 完成 | 字幕直接修補 + LLM 翻譯（`--language`） |
+| Refactor | 完成 | Provider 解耦：共用 `aws:` 設定、`NewVideoCriticClient` factory、圖像多格式偵測、移除 llm factory 反向 import |
 
 ---
 

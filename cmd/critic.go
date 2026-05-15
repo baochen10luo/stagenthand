@@ -27,9 +27,9 @@ var criticCmd = &cobra.Command{
 			return fmt.Errorf("global config not initialized")
 		}
 
-		bedrockClient, err := llm.NewBedrockClient(cfg.LLM.AWSAccessKeyID, cfg.LLM.AWSSecretAccessKey, cfg.LLM.AWSRegion, "amazon.nova-pro-v1:0")
+		criticClient, err := llm.NewVideoCriticClient(cfg)
 		if err != nil {
-			return fmt.Errorf("failed to create bedrock client: %w", err)
+			return fmt.Errorf("failed to create critic client: %w", err)
 		}
 
 		propsBytes, err := os.ReadFile(criticPropsPath)
@@ -41,7 +41,7 @@ var criticCmd = &cobra.Command{
 		fmt.Printf("   Against input specification: %s\n", criticPropsPath)
 		fmt.Println("   Sending video and text to Amazon Nova Pro. This may take a minute...")
 
-		criticAgent := video.NewCritic(bedrockClient)
+		criticAgent := video.NewCritic(criticClient)
 		eval, err := criticAgent.Evaluate(ctx, criticVideoPath, propsBytes)
 		if err != nil {
 			return fmt.Errorf("evaluation failed: %w", err)

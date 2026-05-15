@@ -13,6 +13,8 @@ import (
 // Config is the top-level configuration structure.
 type Config struct {
 	LLM      LLMConfig      `mapstructure:"llm"`
+	AWS      AWSConfig      `mapstructure:"aws"`
+	Critic   CriticConfig   `mapstructure:"critic"`
 	Image    ImageConfig    `mapstructure:"image"`
 	Audio    AudioConfig    `mapstructure:"audio"`
 	Video    VideoConfig    `mapstructure:"video"`
@@ -20,6 +22,23 @@ type Config struct {
 	Notify   NotifyConfig   `mapstructure:"notify"`
 	Store    StoreConfig    `mapstructure:"store"`
 	Server   ServerConfig   `mapstructure:"server"`
+}
+
+// AWSConfig holds shared AWS credentials used by all AWS-backed providers
+// (Bedrock LLM, Polly TTS, Nova Canvas/Titan Image, Nova Reel Video, Stability).
+// All providers read from here first; cfg.LLM.AWS* is kept for backward compatibility
+// and is merged into this section automatically on load.
+type AWSConfig struct {
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	SecretAccessKey string `mapstructure:"secret_access_key"`
+	Region          string `mapstructure:"region"`
+}
+
+// CriticConfig holds settings for the AI video critic, which may use a different
+// provider or model than the main generation LLM.
+type CriticConfig struct {
+	Provider string `mapstructure:"provider"` // "bedrock" (default); future: "anthropic", "gemini"
+	Model    string `mapstructure:"model"`    // empty = provider default ("amazon.nova-pro-v1:0" for bedrock)
 }
 
 // LLMConfig holds language-model provider settings.
@@ -144,6 +163,19 @@ func Load(cfgFile string) (*Config, error) {
 	// Expand ~ and $HOME in paths that may come from config files.
 	cfg.Remotion.TemplatePath = expandHome(cfg.Remotion.TemplatePath)
 	cfg.Store.DBPath = expandHome(cfg.Store.DBPath)
+
+	// Backfill cfg.AWS from cfg.LLM.AWS* for backward compatibility.
+	// New configs should set aws.access_key_id etc. directly.
+	if cfg.AWS.AccessKeyID == "" {
+		cfg.AWS.AccessKeyID = cfg.LLM.AWSAccessKeyID
+	}
+	if cfg.AWS.SecretAccessKey == "" {
+		cfg.AWS.SecretAccessKey = cfg.LLM.AWSSecretAccessKey
+	}
+	if cfg.AWS.Region == "" {
+		cfg.AWS.Region = cfg.LLM.AWSRegion
+	}
+
 	return &cfg, nil
 }
 

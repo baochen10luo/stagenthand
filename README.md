@@ -46,34 +46,55 @@ End-to-end pipeline from a raw story prompt to a rendered MP4. Every stage reads
 
 ### LLM Support
 
-Three providers supported out of the box. Priority: flag > env > `~/.shand/config.yaml` > defaults.
+All providers are hot-swappable via config — no code changes required. Priority: flag > env > `~/.shand/config.yaml` > defaults.
 
-| Provider | Config value |
-|---|---|
-| AWS Bedrock (Claude / Nova) | `llm.provider: bedrock` |
-| OpenAI-compatible (Gemini, local) | `llm.provider: openai` or `gemini` |
-| Google Gemini | `llm.provider: gemini` |
+| Provider | Config value | Notes |
+|---|---|---|
+| Local / self-hosted (Qwen3, vLLM, LM Studio) | `llm.provider: openai` | Default; set `base_url` to your endpoint |
+| OpenAI | `llm.provider: openai` | Set `api_key` |
+| Google Gemini | `llm.provider: gemini` | Set `api_key` |
+| Anthropic Claude | `llm.provider: anthropic` | Set `api_key` or `ANTHROPIC_API_KEY` env |
+| AWS Bedrock (Nova, Claude) | `llm.provider: bedrock` | Uses shared `aws:` credentials |
 
 ### Image Generation
 
-Two providers. Nano Banana 2 supports character reference images for cross-panel consistency. Nova Canvas is the AWS Bedrock option.
+Providers are swappable via `image.provider`. Returned format (PNG / JPEG / WebP) is detected automatically from magic bytes — no hardcoded format assumption.
 
-| Provider | Config value |
-|---|---|
-| Nano Banana 2 (Gemini-based) | `image.provider: nanobanana` |
-| AWS Nova Canvas | `image.provider: nova` |
+| Provider | Config value | Notes |
+|---|---|---|
+| aiark (Qwen2.5-VL) | `image.provider: aiark` | Self-hosted; set `image.base_url` |
+| Nano Banana 2 | `image.provider: nanobanana` | Gemini-based; supports character refs |
+| AWS Nova Canvas | `image.provider: bedrock` + `image.model: amazon.nova-canvas-*` | Uses shared `aws:` credentials |
+| AWS Titan | `image.provider: bedrock` + `image.model: amazon.titan-image-generator-*` | Uses shared `aws:` credentials |
+| Stability AI | `image.provider: stability` | Via Bedrock; uses shared `aws:` credentials |
 
 ### Text-to-Speech
 
-Amazon Polly Neural (voice: Zhiyu, Mandarin Chinese). Dialogue is automatically wrapped in SSML. Whisper cues (`Whisper: ...`) are detected and mapped to Polly's whispered effect. Speech rate fixed at 90% for a dramatic, non-rushed delivery.
+TTS provider is hot-swappable via `audio.voice_provider`.
+
+| Provider | Config value | Notes |
+|---|---|---|
+| Amazon Polly Neural | `voice_provider: polly` | Default; multi-language, SSML |
+| aiark TTS (Qwen3-TTS) | `voice_provider: aiark` | Self-hosted; set `aiark_tts_base_url` |
+
+Multi-speaker mode (`--multi-speaker`) routes each `DialogueLine` to a per-character voice based on the character registry.
 
 ### Background Music
 
-Jamendo API integration. Tags are driven by the `BGMTags` directive (e.g. `cinematic+dark`). The pipeline searches, picks the first match, and downloads the MP3 automatically.
+BGM provider is hot-swappable via `audio.music_provider`.
+
+| Provider | Config value |
+|---|---|
+| Jamendo | `music_provider: jamendo` (default) |
+| aiark Music (ACE-Step) | `music_provider: aiark` |
 
 ### AI Critic
 
-Post-render evaluation using Amazon Nova Pro (multimodal). The critic watches the actual MP4 and scores across 4 dimensions. Hard-stop thresholds: `visual_score ≥ 8`, `audio_sync_score ≥ 8`, total `≥ 32/40`.
+Post-render evaluation using a multimodal LLM. Provider is independently configurable via `critic.provider` — decoupled from the generation LLM. Scores across 4 dimensions; hard-stop thresholds: `visual_score ≥ 8`, `audio_sync_score ≥ 8`, total `≥ 32/40`.
+
+| Provider | Config value |
+|---|---|
+| AWS Bedrock Nova Pro | `critic.provider: bedrock` (default) |
 
 | Dimension | Description |
 |---|---|
@@ -226,31 +247,48 @@ cat remotion_props.json | ./shand remotion-render --output ./final.mp4
 Default config path: `~/.shand/config.yaml`. Env vars use `SHAND_` prefix (e.g. `SHAND_LLM_API_KEY`). Flags take highest priority.
 
 ```yaml
+# Shared AWS credentials used by ALL AWS-backed providers
+# (Bedrock LLM, Polly TTS, Nova Canvas/Titan image, Nova Reel video, Stability).
+# Old llm.aws_* keys still work for backward compatibility.
+aws:
+  access_key_id: ""
+  secret_access_key: ""
+  region: us-east-1
+
 llm:
-  provider: bedrock          # bedrock | openai | gemini
-  model: amazon.nova-pro-v1:0
-  aws_access_key_id: ""
-  aws_secret_access_key: ""
-  aws_region: us-east-1
-  # For openai/gemini:
-  # api_key: ${GOOGLE_API_KEY}
-  # base_url: ""             # Leave empty for default; any OpenAI-compatible URL works
+  provider: openai           # openai | gemini | anthropic | bedrock
+  model: ""                  # empty = provider default (gpt-4o / gemini-2.5-pro / etc.)
+  api_key: ""
+  base_url: ""               # any OpenAI-compatible endpoint; empty = official API
+  no_json_mode: false        # set true for servers that don't support response_format:json
+  strip_think_tags: false    # set true for reasoning models (Qwen3, QwQ) that emit <think>
 
 image:
-  provider: nanobanana        # nanobanana | nova
-  api_key: ${GOOGLE_API_KEY}
+  provider: nanobanana        # nanobanana | aiark | bedrock | stability
+  api_key: ""
+  base_url: ""               # for aiark self-hosted
+  model: ""                  # for bedrock: amazon.nova-canvas-* or amazon.titan-image-*
   width: 1024
   height: 576
-  # For nova (AWS Bedrock):
-  # provider: nova
-  # access_key_id: ""
-  # secret_key: ""
-  # region: us-east-1
+  region: ""                 # image-specific region override (defaults to aws.region)
 
 audio:
-  voice_provider: polly       # polly (default)
-  music_provider: jamendo     # jamendo (default)
-  jamendo_client_id: ""       # Leave empty to use public test key
+  voice_provider: polly       # polly | aiark
+  music_provider: jamendo     # jamendo | aiark
+  jamendo_client_id: ""
+  # aiark TTS (self-hosted Qwen3-TTS):
+  # aiark_tts_base_url: ""
+  # aiark_tts_api_key: ""
+  # aiark_tts_voice: ""
+
+critic:
+  provider: bedrock           # bedrock (default); future: anthropic, gemini
+  model: ""                   # empty = amazon.nova-pro-v1:0
+
+video:
+  provider: remotion          # remotion | nova_reel | grok_browser | hyperframes
+  s3_bucket: ""               # required for nova_reel
+  region: ""                  # video-specific region override
 
 remotion:
   template_path: ./remotion-template
@@ -263,7 +301,7 @@ store:
   db_path: ~/.shand/shand.db
 
 server:
-  port: 28080                 # HTTP API for agent / Discord bot checkpoint approval
+  port: 28080
 ```
 
 ---
@@ -313,6 +351,12 @@ All commands read JSON from stdin and write JSON to stdout unless noted. Use `--
 | `--episodes N` | `pipeline` | Produce N episodes in batch |
 | `--batch-concurrency` | `pipeline` | Max concurrent episodes (default: 2) |
 | `--max-iterations` | `postprod loop` | Max postprod loop iterations (default: 3) |
+| `--faithful` | `pipeline` | LLM only splits original text, no invention |
+| `--verbatim` | `pipeline` | Single-pass LLM: segment text verbatim, skip outline/storyboard |
+| `--narration` | `pipeline` | Single-pass LLM: rewrite as narrator voice, all speaker: "" |
+| `--multi-speaker` | `pipeline` | Per-character voice routing via character registry |
+| `--format portrait` | `pipeline` | Vertical 9:16 video (TikTok / Reels / Shorts) |
+| `--video-backend` | `pipeline` | Video renderer: remotion \| nova_reel \| grok_browser \| hyperframes |
 
 ---
 
@@ -324,18 +368,49 @@ SOLID-based layered architecture. The `cmd/` layer is thin: IO only, no business
 cmd/                   Thin layer: IO + dependency injection
 internal/
   domain/              Pure data structs, zero external dependencies
-  llm/                 LLMClient interface + Bedrock / OpenAI-compatible / Mock
-  image/               ImageClient interface + NanoBanana / NovaCanvas / Mock
-  audio/               Polly TTS + Jamendo BGM client
-  video/               AI Critic (Nova Pro multimodal)
+  llm/                 Client interface + factory (openai-compat / bedrock / anthropic / mock)
+                       VideoCriticClient interface + NewVideoCriticClient factory
+  image/               Client interface + factory (aiark / nanobanana / bedrock / stability / mock)
+  audio/               Client interface + factory (polly / aiark-tts / mock)
+                       MusicClient interface + factory (jamendo / aiark-music / mock)
+                       MultiSpeakerClient interface + factory
+  video/               Critic (multimodal evaluation via llm.VideoCriticClient)
   store/               Repository pattern: JobRepo + CheckpointRepo (SQLite/gorm)
   notify/              Notifier interface + Discord webhook
   remotion/            RemotionExecutor interface + exec npx remotion
   character/           Character Registry: persists reference images for cross-panel consistency
   postprod/            Agentic post-production: planner, applier, autonomous loop
-  pipeline/            Orchestrator — depends on all interfaces only
+  pipeline/            Orchestrator — depends on interfaces only, never on concrete providers
 config/                viper loader: flag > env > yaml > defaults
+                       aws:   shared credentials for all AWS-backed providers
+                       critic: independent model config for video evaluation
 remotion-template/     React + Remotion (ShortDrama composition)
+```
+
+### Provider swapping
+
+Switching any provider requires only a config change — no code modification:
+
+```yaml
+# Switch LLM from local Qwen3 to Anthropic:
+llm:
+  provider: anthropic
+  api_key: sk-ant-...
+
+# Switch image from Nano Banana to aiark:
+image:
+  provider: aiark
+  base_url: http://aiark.internal:8080
+
+# Switch TTS from Polly to aiark:
+audio:
+  voice_provider: aiark
+  aiark_tts_base_url: http://aiark.internal:7860
+
+# Use a different model for video critic than for generation:
+critic:
+  provider: bedrock
+  model: amazon.nova-pro-v1:0
 ```
 
 ### SOLID at a glance
@@ -343,9 +418,9 @@ remotion-template/     React + Remotion (ShortDrama composition)
 | Principle | Implementation |
 |---|---|
 | Single Responsibility | Each package owns exactly one domain |
-| Open/Closed | New provider = implement interface, touch nothing else |
+| Open/Closed | New provider = implement interface + add factory case, touch nothing else |
 | Liskov Substitution | Every Mock is a drop-in replacement, same behavioral contract |
-| Interface Segregation | `LLMClient`, `ImageClient`, `AudioBatcher`, `MusicBatcher` are separate |
+| Interface Segregation | `LLMClient`, `VideoCriticClient`, `ImageClient`, `AudioBatcher`, `MusicBatcher` are separate |
 | Dependency Inversion | `cmd/` depends on interfaces; concrete types injected via constructors |
 
 ---
@@ -400,6 +475,7 @@ All user-supplied strings (IDs, file paths, prompts) pass through `internal/doma
 | Phase 10c | Done | Series continuity with sliding window memory |
 | Phase 10.0 | Done | Structured `DialogueLine` (prerequisite for multi-speaker) |
 | Phase 10.1 | Done | Direct subtitle patching + LLM translation (`--language`) |
+| Refactor | Done | Provider decoupling: shared `aws:` config, `NewVideoCriticClient` factory, image multi-format, llm factory reverse-import removed |
 
 ---
 

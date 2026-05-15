@@ -6,17 +6,29 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 )
 
 var reThinkBlock = regexp.MustCompile(`(?s)<think>.*?</think>`)
+var reMarkdownFence = regexp.MustCompile("(?s)^```[a-zA-Z]*\\n?(.*?)\\n?```$")
 
 // stripThinkTags removes <think>...</think> blocks produced by reasoning models
 // (e.g. Qwen3, QwQ) so the remaining content can be parsed as plain JSON.
 func stripThinkTags(s string) string {
 	return reThinkBlock.ReplaceAllString(s, "")
+}
+
+// stripMarkdownFence removes ```json ... ``` or ``` ... ``` wrappers that some
+// models add even when instructed to return plain JSON.
+func stripMarkdownFence(s string) string {
+	s = strings.TrimSpace(s)
+	if m := reMarkdownFence.FindStringSubmatch(s); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return s
 }
 
 // OpenAICompatibleClient connects (via a proxy or standard endpoint)
@@ -173,6 +185,7 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 		if c.stripThinkTags {
 			content = stripThinkTags(content)
 		}
+		content = stripMarkdownFence(content)
 		return []byte(content), nil
 	}
 

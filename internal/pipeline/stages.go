@@ -154,6 +154,16 @@ func buildFaithfulStoryboardToPanelsPrompt(language string, sb domain.Storyboard
 	return buildPromptWithBase(PromptFaithfulStoryboardToPanels, language, sb, targetPanels)
 }
 
+// buildVerbatimStoryToPanelsPrompt builds the single-pass verbatim prompt for raw story text.
+func buildVerbatimStoryToPanelsPrompt(language string) string {
+	return langInstruction(language) + PromptVerbatimStoryToPanels
+}
+
+// buildNarrationStoryToPanelsPrompt builds the single-pass narration prompt for raw story text.
+func buildNarrationStoryToPanelsPrompt(language string) string {
+	return langInstruction(language) + PromptNarrationStoryToPanels
+}
+
 // buildStoryboardToPanelsPrompt returns the PromptStoryboardToPanels with optional language instruction appended.
 func buildStoryboardToPanelsPrompt(language string, sb domain.Storyboard, targetPanels int) string {
 	return buildPromptWithBase(PromptStoryboardToPanels, language, sb, targetPanels)
@@ -343,6 +353,113 @@ CHARACTER RULES:
 - "role" should be the character's narrative function, e.g. "男主角", "女主角的母親", "反派老闆", "旁白".
 - "description" should be one sentence covering appearance, age, and defining personality trait.
 - Do NOT list unnamed extras or background characters.`
+
+	// PromptVerbatimStoryToPanels is used when --verbatim flag is set.
+	// Single-pass: raw story text → panels JSON. No outline or storyboard stages.
+	// The LLM may ONLY segment the text and write image descriptions.
+	// Every dialogue_lines[].text MUST be an EXACT substring of the input — zero paraphrase.
+	PromptVerbatimStoryToPanels = `You are a text segmenter and cinematographer.
+The user has provided a short story or script. Your ONLY job is:
+1. Split it into panels at speaker changes or natural sentence breaks.
+2. For each panel, write a short visual "description" for image generation.
+3. Copy each segment's text CHARACTER-FOR-CHARACTER into dialogue_lines[].text.
+
+ABSOLUTE RULE: Every "text" value in dialogue_lines MUST be an exact copy of a portion of the input text.
+Do NOT paraphrase, summarize, or add a single character that is not in the input.
+Do NOT invent narration. If a segment has no dialogue, quote the exact sentence from the input as speaker: "".
+
+Output ONLY valid JSON matching this schema:
+{
+  "project_id": "short_snake_case_from_story_001",
+  "directives": {
+    "style_prompt": "specific art style for ALL panels — must include: art medium, line style, color palette, and character look. Example: 'flat 2D cartoon, thick black outlines, warm pastel colors, cute rounded animal characters, simple background'",
+    "color_filter": "cinematic",
+    "bgm_tags": "ambient+nature"
+  },
+  "panels": [
+    {
+      "scene_number": 1,
+      "panel_number": 1,
+      "description": "short visual description for image generation",
+      "dialogue": "",
+      "dialogue_lines": [
+        {"speaker": "", "text": "EXACT TEXT FROM INPUT"}
+      ],
+      "character_refs": [],
+      "duration_sec": 4.0,
+      "directive": {
+        "motion_effect": "ken_burns_in",
+        "motion_intensity": 0.05,
+        "transition_in": "fade",
+        "transition_out": "fade",
+        "subtitle_effect": "fade",
+        "subtitle_position": "bottom"
+      }
+    }
+  ]
+}
+
+SPEAKER RULES:
+- Narration: speaker: "" (empty string).
+- Character dialogue: use the character's name exactly as it appears in the input text.
+- Do NOT use "旁白", "VO", "narrator" as speaker labels.
+
+motion_effect: "ken_burns_in" | "ken_burns_out" | "pan_left" | "pan_right" | "static"
+motion_intensity: 0.03–0.08
+transition_in: "fade" | "cut" | "dissolve" | "wipe_left"
+subtitle_effect: "fade" | "typewriter" | "none"`
+
+	// PromptNarrationStoryToPanels is used when --narration flag is set.
+	// Single-pass: raw story text → panels JSON, all spoken by a single narrator.
+	// LLM may rewrite dialogue as quoted narration but cannot add new plot content.
+	PromptNarrationStoryToPanels = `You are a storytelling narrator and cinematographer.
+The user has provided a short story or script. Your job is to rewrite it as narration — as if a single narrator is reading the story aloud to an audience.
+
+RULES:
+1. Convert to narrator voice using ONLY the words already in the original. Do NOT add adjectives, actions, metaphors, or any detail not present in the input. WRONG: 「在茂密的森林裡，一隻麋鹿正轉著圈。」RIGHT: 「有隻麋鹿在森林裡迷路了。」
+2. Wrap character dialogue in 「」quotes. Place the quote alone with no attribution suffix. WRONG: 「欸欸！我迷路啦！」麋鹿說道。 RIGHT: 「欸欸！我迷路啦！！」
+3. All panels MUST use speaker: "" — there is only one narrator voice. Never use a character name as speaker.
+4. Do NOT invent new plot points, characters, events, or descriptive details.
+5. Split into panels at natural story beats (one sentence or one exchange per panel).
+6. Write a short visual "description" for each panel for image generation. IMPORTANT: identify any character traits mentioned or implied by the story (e.g. wearing glasses, clothing, physical features) and include them consistently in EVERY panel description that shows that character.
+7. Keep the tone and spirit of the original — if it is humorous, keep it humorous.
+8. For bgm_tags: match the story's emotional tone. Humorous/comic stories → "playful+comic+upbeat+lighthearted". Sad stories → "melancholy+slow". Action → "tense+driving+energetic".
+
+Output ONLY valid JSON matching this schema:
+{
+  "project_id": "short_snake_case_from_story_001",
+  "directives": {
+    "style_prompt": "specific art style for ALL panels — must include: art medium (e.g. flat 2D cartoon / watercolor / pixel art), line style (e.g. thick black outlines / soft edges), color palette (e.g. warm pastel / vibrant saturated), and character look (e.g. cute rounded animals). Example: 'flat 2D cartoon, thick black outlines, warm pastel colors, cute rounded animal characters, simple background'",
+    "color_filter": "cinematic",
+    "bgm_tags": "choose based on story tone, e.g. playful+comic+upbeat for humorous stories"
+  },
+  "panels": [
+    {
+      "scene_number": 1,
+      "panel_number": 1,
+      "description": "short visual description for image generation",
+      "dialogue": "",
+      "dialogue_lines": [
+        {"speaker": "", "text": "旁白文字"}
+      ],
+      "character_refs": [],
+      "duration_sec": 4.0,
+      "directive": {
+        "motion_effect": "ken_burns_in",
+        "motion_intensity": 0.05,
+        "transition_in": "fade",
+        "transition_out": "fade",
+        "subtitle_effect": "fade",
+        "subtitle_position": "bottom"
+      }
+    }
+  ]
+}
+
+motion_effect: "ken_burns_in" | "ken_burns_out" | "pan_left" | "pan_right" | "static"
+motion_intensity: 0.03–0.08
+transition_in: "fade" | "cut" | "dissolve" | "wipe_left"
+subtitle_effect: "fade" | "typewriter" | "none"`
 
 	// PromptFaithfulStoryboardToPanels is used when --faithful flag is set.
 	PromptFaithfulStoryboardToPanels = `You are a visual panel designer and cinematographer. Convert the input storyboard JSON into a detailed panel-by-panel generation JSON.

@@ -47,6 +47,8 @@ var (
 	pipelineTargetPanels int    // when > 0, LLM is instructed to generate exactly this many panels
 	pipelineI2V          bool   // image-to-video mode: use --image-dir illustrations as I2V references
 	pipelineFaithful     bool   // when true, LLM only splits original text — no invention or embellishment
+	pipelineVerbatim     bool   // when true, single-pass LLM segments text verbatim; skips outline/storyboard
+	pipelineNarration    bool   // when true, single-pass LLM rewrites story as narrator voice; all speaker: ""
 )
 
 var pipelineCmd = &cobra.Command{
@@ -131,16 +133,10 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	// Build critic evaluator if max retries > 0 and AWS credentials are available
 	var criticEvaluator pipeline.VideoCriticEvaluator
-	if pipelineMaxRetries > 0 && cfg != nil &&
-		cfg.LLM.AWSAccessKeyID != "" && cfg.LLM.AWSSecretAccessKey != "" {
-		bedrockClient, bedrockErr := llm.NewBedrockClient(
-			cfg.LLM.AWSAccessKeyID,
-			cfg.LLM.AWSSecretAccessKey,
-			cfg.LLM.AWSRegion,
-			cfg.LLM.Model,
-		)
-		if bedrockErr == nil && bedrockClient != nil {
-			criticEvaluator = newVideoCriticAdapter(video.NewCritic(bedrockClient))
+	if pipelineMaxRetries > 0 && cfg != nil && cfg.AWS.AccessKeyID != "" {
+		criticClient, criticErr := llm.NewVideoCriticClient(cfg)
+		if criticErr == nil {
+			criticEvaluator = newVideoCriticAdapter(video.NewCritic(criticClient))
 		}
 	}
 
@@ -148,10 +144,10 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	var audioBatcher pipeline.AudioBatcher
 	if pipelineMultiSpeaker {
 		reg := character.NewFileRegistry(shandHome)
-		multiSpeakerClient := audio.NewPollyMultiSpeakerClient(
-			cfg.LLM.AWSRegion, cfg.LLM.AWSAccessKeyID, cfg.LLM.AWSSecretAccessKey,
-			pipelineLanguage, reg,
-		)
+		multiSpeakerClient, msErr := audio.NewMultiSpeakerTTSClientFromConfig(dryRun, cfg, pipelineLanguage, reg)
+		if msErr != nil {
+			return fmt.Errorf("failed to create multi-speaker TTS client: %w", msErr)
+		}
 		audioBatcher = pipeline.NewMultiSpeakerAudioBatcher(multiSpeakerClient, shandHome)
 	} else {
 		audioBatcher = pipeline.NewAudioClientBatcher(audioClient, shandHome)
@@ -169,6 +165,8 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		Language:     pipelineLanguage,
 		TargetPanels: pipelineTargetPanels,
 		Faithful:     pipelineFaithful,
+		Verbatim:     pipelineVerbatim,
+		Narration:    pipelineNarration,
 	}
 	orch := pipeline.NewOrchestrator(deps)
 
@@ -314,9 +312,11 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	propsPath := filepath.Join(pipelineOutputDir, "remotion_props.json")
 
+	timestamp := time.Now().Format("20060102_150405")
+
 	// Default render (always runs when max-retries == 0)
 	if pipelineMaxRetries == 0 {
-		outputPath := filepath.Join(pipelineOutputDir, "output_v1.mp4")
+		outputPath := filepath.Join(pipelineOutputDir, fmt.Sprintf("%s_%s_v1.mp4", result.Props.ProjectID, timestamp))
 		if renderErr := executor.Render(cmd.Context(), templatePath, composition, propsPath, outputPath); renderErr != nil {
 			fmt.Fprintf(os.Stderr, "[Warning] render failed: %v\n", renderErr)
 		} else {
@@ -326,7 +326,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	if pipelineMaxRetries > 0 {
 		for attempt := 0; attempt <= pipelineMaxRetries; attempt++ {
-			outputPath := filepath.Join(pipelineOutputDir, fmt.Sprintf("output_v%d.mp4", attempt+1))
+			outputPath := filepath.Join(pipelineOutputDir, fmt.Sprintf("%s_%s_v%d.mp4", result.Props.ProjectID, timestamp, attempt+1))
 
 			// Render mp4
 			renderErr := executor.Render(cmd.Context(), templatePath, composition, propsPath, outputPath)
@@ -552,6 +552,10 @@ func init() {
 		"image-to-video mode: skip cover image, use remaining --image-dir illustrations as I2V references in grok_browser stage")
 	pipelineCmd.Flags().BoolVar(&pipelineFaithful, "faithful", false,
 		"faithful mode: LLM only splits original text into scenes/panels — no invention or embellishment")
+	pipelineCmd.Flags().BoolVar(&pipelineVerbatim, "verbatim", false,
+		"verbatim mode: single-pass LLM segments text only; dialogue is copied character-for-character from input")
+	pipelineCmd.Flags().BoolVar(&pipelineNarration, "narration", false,
+		"narration mode: single-pass LLM rewrites story as narrator voice; all dialogue becomes narration (speaker: '')")
 	rootCmd.AddCommand(pipelineCmd)
 }
 
@@ -569,12 +573,11 @@ func resolveVideoBackend() string {
 // runNovaReelStage generates a 6-second dynamic shot for each panel via Nova Reel I2V,
 // then concatenates all shots into a single mp4.
 func runNovaReelStage(ctx context.Context, panels []domain.Panel, props domain.RemotionProps, appCfg *config.Config, outputDir string) (string, error) {
-	// Resolve AWS credentials: prefer video config, fall back to LLM config
-	accessKey := appCfg.LLM.AWSAccessKeyID
-	secretKey := appCfg.LLM.AWSSecretAccessKey
+	accessKey := appCfg.AWS.AccessKeyID
+	secretKey := appCfg.AWS.SecretAccessKey
 	region := appCfg.Video.Region
 	if region == "" {
-		region = appCfg.LLM.AWSRegion
+		region = appCfg.AWS.Region
 	}
 	s3Bucket := appCfg.Video.S3Bucket
 	if s3Bucket == "" {
@@ -880,22 +883,17 @@ func collectCoverImage() string {
 
 // runReelCritic evaluates the reel video with a motion-focused Critic 2 prompt.
 func runReelCritic(ctx context.Context, videoPath string, props domain.RemotionProps, appCfg *config.Config) (bool, error) {
-	if appCfg.LLM.AWSAccessKeyID == "" || appCfg.LLM.AWSSecretAccessKey == "" {
+	if appCfg.AWS.AccessKeyID == "" {
 		// No credentials for critic — assume approved to avoid blocking
 		return true, nil
 	}
 
-	bedrockClient, err := llm.NewBedrockClient(
-		appCfg.LLM.AWSAccessKeyID,
-		appCfg.LLM.AWSSecretAccessKey,
-		appCfg.LLM.AWSRegion,
-		appCfg.LLM.Model,
-	)
+	criticClient, err := llm.NewVideoCriticClient(appCfg)
 	if err != nil {
-		return false, fmt.Errorf("create bedrock client for reel critic: %w", err)
+		return false, fmt.Errorf("create critic client for reel critic: %w", err)
 	}
 
-	critic := video.NewMotionCritic(bedrockClient)
+	critic := video.NewMotionCritic(criticClient)
 	propsJSON, _ := json.Marshal(props)
 	eval, err := critic.Evaluate(ctx, videoPath, propsJSON)
 	if err != nil {

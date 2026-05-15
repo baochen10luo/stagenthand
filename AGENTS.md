@@ -1,195 +1,120 @@
-# StagentHand — PROJECT KNOWLEDGE BASE
+# CLAUDE.md
 
-**Binary**: `shand`
-**Module**: `github.com/baochen10luo/stagenthand`
-**Language**: Go 1.22+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
----
+## Skills
 
-## OVERVIEW
+Workflow knowledge lives in `.agents/skills/` (symlinked from `.claude/skills/`). Load `aiark-pipeline` before any pipeline work; load `remotion` before any Remotion/video rendering work.
 
-CLI-first AI 短劇製作 pipeline。Unix philosophy：每個 skill 做好一件事，stdin/stdout 傳遞 JSON。
-完整規格見 `SPEC_FULL.md`。
-
----
-
-## ARCHITECTURE — SOLID 原則執行標準
-
-### Single Responsibility
-- 每個 `internal/` package 只負責一個領域
-- `store/` 只管持久化，不含業務邏輯
-- `llm/` 只管 LLM 呼叫，不管 prompt 組裝（prompt 在 cmd/ 層）
-- `pipeline/` 只管 orchestration，不管個別 skill 實作
-
-### Open/Closed
-- 所有外部服務用 interface 定義：`LLMClient`、`ImageClient`、`VideoClient`
-- 新增 provider（e.g. Claude）只需實作 interface，不改既有代碼
-- `store/` 用 Repository pattern，DB 實作可替換
-
-### Liskov Substitution
-- `MockLLMClient` 必須完全可替換 `OpenAIClient`，行為語意相同
-- Mock 實作放 `*_test.go` 或 `internal/*/mock.go`
-
-### Interface Segregation
-- `LLMClient` 不包含 image gen 方法
-- `ImageClient` 不包含 LLM 方法
-- `CheckpointRepository` 與 `JobRepository` 分開定義
-
-### Dependency Inversion
-- cmd/ 層依賴 interface，不依賴具體實作
-- 具體實作透過 constructor injection 注入
-- 禁止在 cmd/ 層直接 `new(OpenAIClient)`
-
----
-
-## STRUCTURE
-
-```
-cmd/                    # cobra subcommands（薄層，只做 IO + 注入）
-  root.go               # root command + global flags
-  story_to_outline.go
-  outline_to_storyboard.go
-  storyboard_to_panels.go
-  panel_to_image.go
-  panels_to_images.go
-  storyboard_to_remotion.go
-  remotion_render.go
-  remotion_preview.go
-  pipeline.go
-  checkpoint.go
-  status.go
-
-internal/
-  domain/               # 純資料結構，零依賴
-    types.go            # Project, Outline, Episode, Storyboard, Scene, Panel, Job, Checkpoint, RemotionProps
-  llm/
-    client.go           # LLMClient interface
-    openai.go           # OpenAIClient（實作）
-    gemini.go           # GeminiClient（實作）
-    mock.go             # MockLLMClient（測試用）
-  image/
-    client.go           # ImageClient interface
-    flux.go
-    mock.go
-  video/
-    client.go           # VideoClient interface
-    kling.go
-    mock.go
-  store/
-    db.go               # gorm + SQLite setup, DB interface
-    job.go              # JobRepository interface + gorm 實作
-    checkpoint.go       # CheckpointRepository interface + gorm 實作
-    mock.go             # in-memory mock（測試用）
-  notify/
-    notifier.go         # Notifier interface
-    discord.go          # DiscordNotifier
-    mock.go
-  remotion/
-    executor.go         # RemotionExecutor interface
-    exec.go             # exec npx remotion 實作
-    mock.go
-  pipeline/
-    orchestrator.go     # Pipeline struct，依賴所有 interface
-    stages.go           # 四個 HITL stage 邏輯
-
-config/
-  loader.go             # viper config 載入
-  default.yaml          # 預設值
-
-remotion-template/      # React + Remotion 專案
-```
-
----
-
-## TDD 規則（強制）
-
-**測試先行。每個函數，測試在實作前寫。**
-
-1. 寫 `*_test.go` → 確認 test fail → 寫實作 → 確認 test pass → refactor
-2. 每個 interface 的 Mock 必須在對應的 `mock.go` 裡，不散落在 `*_test.go`
-3. 測試覆蓋率目標：**≥ 80%**（`go test -cover ./...`）
-4. Table-driven tests 優先（`[]struct{ name, input, want }`）
-5. 禁止在測試裡呼叫真實 API — 全部用 Mock
-
----
-
-## CONVENTIONS
-
-### 命名
-- interface：`LLMClient`、`JobRepository`（動詞+名詞或名詞+Repository）
-- 具體實作：`OpenAIClient`、`GormJobRepository`
-- Mock：`MockLLMClient`、`MockJobRepository`
-- constructor：`NewOpenAIClient(cfg Config) LLMClient`（回傳 interface，不回傳具體型別）
-
-### 錯誤處理
-- 業務錯誤用 sentinel error：`var ErrCheckpointNotFound = errors.New("checkpoint not found")`
-- 禁止 `panic`（除非是 init 階段的致命錯誤）
-- 所有 error 向上傳遞，在 cmd/ 層統一處理
-
-### IO 規則（CLI）
-- stdout：純 JSON 輸出（`encoding/json`）
-- stderr：所有 log（`log/slog`，支援 `--verbose` 開 debug）
-- exit code：0=成功 1=失敗 2=等待HITL
-
-### API 呼叫
-- 所有外部 API：retry 3 次，指數退避（1s → 2s → 4s）
-- timeout 必須設定（預設 30s）
-- 速率限制錯誤（429）需識別並等待
-
-### 設定優先順序
-flag > 環境變數 > `~/.shand/config.yaml` > 預設值
-
----
-
-## ANTI-PATTERNS（禁止）
-
-- 禁止在 `internal/` 裡直接讀 CLI flags（分層污染）
-- 禁止在 cmd/ 層寫業務邏輯（薄層原則）
-- 禁止 global state（除了 config 初始化）
-- 禁止超過 3 層縮進（Linus 準則）
-- 禁止在 `domain/types.go` 加任何方法或依賴（純資料結構）
-- 禁止 `interface{}` 或 `any`（除非確實必要，必須加註解說明）
-
----
-
-## COMMANDS
+## Commands
 
 ```bash
-# 開發
-go test ./...                    # 跑所有測試
-go test -cover ./...             # 含覆蓋率
-go test -run TestXxx ./internal/store/  # 跑特定測試
-go build -o shand ./cmd/         # 編譯
+# Build
+go build -o shand .
 
-# dry-run 驗證
+# Test all packages
+go test ./...
+
+# Test with coverage (target ≥ 80%)
+go test -cover ./...
+
+# Run a single test
+go test -run TestFunctionName ./internal/store/
+
+# Run pipeline dry-run (no API calls)
+echo "一個程序員愛上了咖啡師的故事" | ./shand pipeline --skip-hitl --dry-run
+
+# Validate a single stage
 echo '{"title":"test"}' | ./shand story-to-outline --dry-run
-
-# Phase 驗證（每個 phase 完成後跑）
-go test -cover ./... && echo "✅ Phase OK"
 ```
 
----
+## Architecture
 
-## DEVELOPMENT WORKFLOW（雙模型）
+### Data Flow
 
-1. **我（Claude / sonnet-4-6）** 主導施工：寫測試 → 寫實作 → 驗證
-2. **gpt-5.2（openai-codex）** 獨立 review：read-only，不被施工方向影響
-3. Review 通過（✅ Ready）才推進下一個函數或 phase
-4. Review 被擋（⛔ Blocked）→ 修完同一條 thread 再驗
+```
+Raw story (stdin)
+  ↓ story-to-outline     (LLM)  → Outline JSON
+  ↓ outline-to-storyboard (LLM) → Storyboard JSON (with Directives, Scenes)
+  ↓ storyboard-to-panels  (LLM) → []Panel JSON (prompt, dialogue, duration)
+  ↓ panels-to-images  (ImageClient) → []Panel with image_url
+  ↓ TTS (AudioBatcher) + BGM (MusicBatcher)
+  ↓ storyboard-to-remotion-props → RemotionProps JSON
+  ↓ remotion-render (exec npx) → mp4
+```
 
----
+The `Orchestrator` (`internal/pipeline/orchestrator.go`) auto-detects input format — raw story text, Outline JSON, Storyboard JSON, or a flat RemotionProps — and routes to the correct starting stage.
 
-## PHASE STATUS
+### Layer Rules
 
-- [x] Phase 1：cobra骨架 + config(viper) + domain/types + SQLite(gorm) + status/checkpoint
-- [x] Phase 2：LLM interface + story-to-outline/outline-to-storyboard/storyboard-to-panels + dry-run
-- [x] Phase 3：image interface + panel-to-image/panels-to-images + Discord notify
-- [x] Phase 4：remotion-template + storyboard-to-remotion-props + render/preview
-- [x] Phase 5：pipeline orchestrator + HITL四節點 + e2e test
-- [x] Phase 6：AWS Bedrock LLM/Image + Amazon Polly TTS + 音頻同步
-- [x] Phase 7：AI Critic（多模態視頻評估）+ Jamendo BGM + 字幕淨化 + 動態時長
-- [x] Phase 8：Directives 配置系統（StylePrompt / BGMTags）+ 智能恢復機制
-- [ ] Phase 9：多語言 TTS（--language flag）+ 角色持久化（internal/character/）+ AI Critic auto-retry（--max-retries）+ 批次多集（--episodes N）
-- [ ] Phase 9.5：Agentic 後製（shand postprod evaluate/apply/loop）+ internal/postprod/ 套件 + EditPlan/EditOperation 資料結構
+- **`cmd/`** — thin cobra wrappers only: read stdin, inject deps, call internal packages, write stdout JSON. No business logic.
+- **`internal/domain/`** — pure data structs, zero external deps. Never add methods with side effects here.
+- **`internal/pipeline/`** — orchestration only. Depends on interfaces (`Transformer`, `ImageBatcher`, `AudioBatcher`, `MusicBatcher`, `CheckpointGate`), never on concrete providers.
+- **`internal/llm/`, `image/`, `audio/`, `video/`** — provider implementations. Each has a `Client` interface + concrete impl(s) + `mock.go`.
+- **`internal/store/`** — SQLite via GORM. `JobRepository` + `CheckpointRepository` interfaces with `GormXxx` impls and in-memory mocks.
+- **`internal/server/`** — Gin HTTP server on `:28080` for checkpoint approve/reject (agent/Discord bot entry point).
 
-**Current：Phase 9（待實作）**
+### Key Interfaces
+
+| Interface | Defined in | Purpose |
+|---|---|---|
+| `llm.Client` | `internal/llm/client.go` | `GenerateTransformation(ctx, systemPrompt, input) ([]byte, error)` |
+| `llm.VideoCriticClient` | `internal/llm/client.go` | Multi-modal video review |
+| `image.Client` | `internal/image/client.go` | `GenerateImage(ctx, prompt, refs) ([]byte, error)` |
+| `audio.Client` | `internal/audio/client.go` | TTS (Polly) |
+| `audio.MusicClient` | `internal/audio/client.go` | BGM (Jamendo) |
+| `pipeline.Transformer` | `internal/pipeline/stages.go` | Wraps `llm.Client` for orchestrator |
+| `pipeline.ImageBatcher` | `internal/pipeline/orchestrator.go` | Batch image gen adapter |
+| `store.CheckpointRepository` | `internal/store/checkpoint.go` | HITL checkpoint persistence |
+
+### HITL Checkpoints
+
+Four pause points: `outline → storyboard → images → final`. At each, `CheckpointGateAdapter.CreateAndWait()` writes a DB record and polls every 5s. Approval via:
+- CLI: `shand checkpoint approve <id>`
+- HTTP: `POST /checkpoints/:id/approve` (Gin server)
+- Bypass: `--skip-hitl` flag
+
+### Smart Resume (Phase 8)
+
+`ImageClientBatcher` and `AudioClientBatcher` skip generation if the target file already exists and is non-empty (`projects/<id>/images/scene_X_panel_Y.png`). This means reruns only call paid APIs for missing assets.
+
+### Adapters Pattern
+
+`internal/pipeline/adapters.go` provides three adapter structs (`ImageClientBatcher`, `AudioClientBatcher`, `MusicClientBatcher`) that wrap provider clients to implement the batcher interfaces. This keeps `Orchestrator` decoupled from provider specifics.
+
+### Provider Factories
+
+- `llm.NewClient(provider, dryRun, cfg)` — returns `mock` in dry-run; routes to `openai-compat`, `gemini`, `bedrock`, or `nova`
+- `image.NewClient(provider, dryRun, cfg)` — routes to `nanobanana`, `nova`, or `mock`
+
+### Configuration
+
+Priority: CLI flag > `SHAND_*` env vars > `~/.shand/config.yaml` > defaults.
+
+Key defaults: `llm.provider=openai`, `image.provider=nanobanana`, `store.db_path=~/.shand/shand.db`, `server.port=28080`.
+
+### Directives System (Phase 8)
+
+`Storyboard.Directives` holds global render config (`StylePrompt`, `BGMTags`, `ColorFilter`, audio ducking params). `Panel.Directive` holds per-panel overrides (`MotionEffect`, `TransitionIn/Out`, `SubtitleEffect`). The orchestrator prepends `StylePrompt` to every panel's `Description` before image generation.
+
+### IO Contract
+
+- **stdout**: pure JSON only
+- **stderr**: all logs (`slog`, enabled by `--verbose`)
+- **exit codes**: `0` = success, `1` = failure, `2` = waiting HITL
+
+### TDD Rules
+
+Tests are written before implementation. Every interface has a `mock.go` in its own package (not in `*_test.go` files). Use table-driven tests. No real API calls in tests.
+
+## Current Phase
+
+**Phase 10.1 complete.** All phases through 10.1 are shipped:
+- Phase 9: multi-language TTS, character registry, AI Critic auto-retry, batch multi-episode
+- Phase 10a: multi-speaker TTS with per-character voice routing
+- Phase 10b: vertical video 9:16 format
+- Phase 10c: series continuity with sliding window memory
+- Phase 10.0: structured `DialogueLine`
+- Phase 10.1: direct subtitle patching + LLM translation
+
+See `DEVELOPMENT_PLAN.md` for full spec and `AGENTS.md` for anti-patterns and naming conventions.

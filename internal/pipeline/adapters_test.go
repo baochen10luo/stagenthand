@@ -13,6 +13,9 @@ import (
 	"github.com/baochen10luo/stagenthand/internal/pipeline"
 )
 
+// fakePNG is a minimal PNG header used in tests so isValidImageBytes accepts it.
+var fakePNG = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+
 // --- Mock image.Client for ImageClientBatcher ---
 
 type mockImageClient struct {
@@ -26,7 +29,7 @@ func (m *mockImageClient) GenerateImage(_ context.Context, _ string, _ []string)
 
 func TestImageClientBatcher_Success(t *testing.T) {
 	tmpDir := t.TempDir()
-	batcher := pipeline.NewImageClientBatcher(&mockImageClient{data: []byte("fakepng")}, tmpDir)
+	batcher := pipeline.NewImageClientBatcher(&mockImageClient{data: fakePNG}, tmpDir)
 	panels := []domain.Panel{
 		{SceneNumber: 1, PanelNumber: 1, Description: "hero", CharacterRefs: []string{}},
 		{SceneNumber: 1, PanelNumber: 2, Description: "cafe", CharacterRefs: []string{}},
@@ -69,7 +72,7 @@ func TestImageClientBatcher_ResumeSkipsGeneration(t *testing.T) {
 	fullDir := filepath.Join(tmpDir, "resume-proj")
 	os.MkdirAll(fullDir, 0755)
 	absPath := filepath.Join(fullDir, "scene_1_panel_1.png")
-	os.WriteFile(absPath, []byte("existing data"), 0644)
+	os.WriteFile(absPath, fakePNG, 0644)
 
 	// Inject a mock that will ERROR if called. If resume works, it won't be called.
 	batcher := pipeline.NewImageClientBatcher(&mockImageClient{err: errors.New("SHOULD NOT BE CALLED")}, tmpDir)
@@ -97,7 +100,7 @@ func (c *captureImageClient) GenerateImage(_ context.Context, _ string, refs []s
 	if c.data != nil {
 		return c.data, nil
 	}
-	return []byte("fakepng"), nil
+	return fakePNG, nil
 }
 
 func TestImageClientBatcherWithRegistry_LooksUpCharacterRefs(t *testing.T) {
