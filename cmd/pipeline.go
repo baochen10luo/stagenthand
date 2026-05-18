@@ -164,6 +164,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		SkipHITL:     pipelineSkipHITL,
 		Language:     pipelineLanguage,
 		TargetPanels: pipelineTargetPanels,
+		Format:       videoFormat,
 		Faithful:     pipelineFaithful,
 		Verbatim:     pipelineVerbatim,
 		Narration:    pipelineNarration,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
+	"github.com/baochen10luo/stagenthand/internal/render"
 )
 
 func logStage(stage, msg string) {
@@ -77,14 +78,15 @@ type PropsCriticResult struct {
 // OrchestratorDeps groups external dependencies injected at construction time.
 // Dependency Inversion: orchestrator only knows interfaces, never concrete types.
 type OrchestratorDeps struct {
-	LLM         Transformer
-	Images      ImageBatcher
-	Audio       AudioBatcher
-	Music       MusicBatcher
-	Checkpoints CheckpointGate
-	PropsCritic PropsCriticEvaluator // optional; nil = disabled
+	LLM          Transformer
+	Images       ImageBatcher
+	Audio        AudioBatcher
+	Music        MusicBatcher
+	Checkpoints  CheckpointGate
+	PropsCritic  PropsCriticEvaluator // optional; nil = disabled
 	Language     string               // BCP-47 language tag for TTS/dialogue
 	TargetPanels int                  // when > 0, LLM is instructed to generate exactly this many panels
+	Format       render.VideoFormat   // landscape (16:9) or portrait (9:16)
 	DryRun       bool
 	SkipHITL     bool
 	Faithful     bool // when true, LLM only splits original text — no invention
@@ -216,6 +218,9 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 
 	// Normalize DialogueLine speakers: collapse "旁白", "VO", "narrator" etc → "".
 	panels = normalizePanelSpeakers(panels)
+
+	// Break long dialogue lines for portrait subtitles
+	panels = BreakLongDialogueLines(panels, o.deps.Format)
 
 	// Apply dynamic duration: ensure each panel is long enough for its dialogue
 	// plus an inversely-proportional breathing buffer for the viewer.
