@@ -45,6 +45,10 @@ func PanelsToPropsWithFormat(projectID string, panels []domain.Panel, width, hei
 	if height == 0 {
 		height = fh
 	}
+
+	// Break long dialogue lines for portrait (9:16) subtitles
+	panels = BreakLongDialogueLines(panels, format)
+
 	normalized := make([]domain.Panel, len(panels))
 	for i, p := range panels {
 		p = withDefaultDuration(p)

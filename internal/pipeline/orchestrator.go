@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/baochen10luo/stagenthand/internal/domain"
+	"github.com/baochen10luo/stagenthand/internal/remotion"
 	"github.com/baochen10luo/stagenthand/internal/render"
 )
 
@@ -220,7 +221,7 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	panels = normalizePanelSpeakers(panels)
 
 	// Break long dialogue lines for portrait subtitles
-	panels = BreakLongDialogueLines(panels, o.deps.Format)
+	panels = remotion.BreakLongDialogueLines(panels, o.deps.Format)
 
 	// Apply dynamic duration: ensure each panel is long enough for its dialogue
 	// plus an inversely-proportional breathing buffer for the viewer.
