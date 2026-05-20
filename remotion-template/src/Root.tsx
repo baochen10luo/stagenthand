@@ -3,7 +3,7 @@ import type { RemotionProps } from "./types";
 import { ShortDrama } from "./components/ShortDrama";
 
 // calculateMetadata dynamically determines total duration from panel data.
-// This eliminates hardcoded durationInFrames — the special case disappears.
+// Accounts for scene transition overlap that reduces effective total.
 const calculateMetadata: CalculateMetadataFunction<RemotionProps> = ({
   props,
 }) => {
@@ -12,10 +12,21 @@ const calculateMetadata: CalculateMetadataFunction<RemotionProps> = ({
     (sum, panel) => sum + (panel.duration_sec > 0 ? panel.duration_sec : 3.0),
     0
   );
-  const durationInFrames = Math.max(1, Math.round(totalDurationSec * fps));
+  const totalFrames = Math.max(1, Math.round(totalDurationSec * fps));
+
+  // Subtract scene transition overlaps
+  const sceneTransMs = props.directives?.scene_transition_duration_ms ?? 0;
+  const sceneTransFrames = Math.round((sceneTransMs / 1000) * fps);
+  let boundaries = 0;
+  for (let i = 1; i < props.panels.length; i++) {
+    if (props.panels[i].scene_number !== props.panels[i - 1].scene_number) {
+      boundaries++;
+    }
+  }
+  const effectiveFrames = Math.max(1, totalFrames - boundaries * sceneTransFrames);
 
   return {
-    durationInFrames,
+    durationInFrames: effectiveFrames,
     fps,
     width: props.width ?? 1024,
     height: props.height ?? 576,

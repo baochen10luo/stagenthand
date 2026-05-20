@@ -50,6 +50,8 @@ export type Directives = {
   bgm_tags?: string;
   color_filter?: "none" | "cinematic" | "vintage" | "cyberpunk";
   style_prompt?: string;
+  scene_transition_in?: "crossfade" | "fade" | "cut";
+  scene_transition_duration_ms?: number; // 0 = disabled
 };
 
 export type RemotionProps = {

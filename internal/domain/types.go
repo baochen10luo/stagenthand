@@ -227,6 +227,9 @@ type Directives struct {
 	// Visual
 	ColorFilter string `json:"color_filter,omitempty"` // none|cinematic|vintage|cyberpunk
 	StylePrompt string `json:"style_prompt,omitempty"` // globally prepended prompt text
+	// Scene transitions
+	SceneTransitionIn         string `json:"scene_transition_in,omitempty"`         // "crossfade" | "fade" | "cut"
+	SceneTransitionDurationMs int    `json:"scene_transition_duration_ms,omitempty"` // default 0 (disabled)
 	// Language
 	Language string `json:"language,omitempty"` // BCP-47 language tag, e.g. "zh-TW", "en-US"
 }
