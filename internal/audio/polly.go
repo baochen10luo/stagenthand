@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/baochen10luo/stagenthand/internal/pronunciation"
 )
 
 // languageConfig maps a BCP-47 language tag to the AWS Polly voice and language code.
@@ -40,6 +42,9 @@ type PollyCLIClient struct {
 	secretKey    string
 	// commandFactory allows mocking exec.Command for testing
 	commandFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
+	// PronunciationProcessor applies dictionary-based pronunciation overrides
+	// to the SSML text before synthesis (e.g., 破音字 correction).
+	PronunciationProcessor pronunciation.Processor
 }
 
 // NewPollyCLIClient creates a new TTS client backed by the AWS CLI.
@@ -75,6 +80,9 @@ func (c *PollyCLIClient) GenerateSpeech(ctx context.Context, text string) ([]byt
 		return nil, nil // No text, no audio
 	}
 	ssmlText := formatSSML(text)
+	if c.PronunciationProcessor != nil {
+		ssmlText = c.PronunciationProcessor.Process(ssmlText)
+	}
 	return c.SynthesizeSSML(ctx, ssmlText)
 }
 

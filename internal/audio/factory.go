@@ -6,7 +6,13 @@ import (
 
 	"github.com/baochen10luo/stagenthand/config"
 	"github.com/baochen10luo/stagenthand/internal/character"
+	"github.com/baochen10luo/stagenthand/internal/pronunciation"
 )
+
+// defaultPronunciationProcessor returns a processor with the built-in dictionary.
+func defaultPronunciationProcessor() pronunciation.Processor {
+	return pronunciation.NewOverrideProcessor(pronunciation.DefaultDictionary())
+}
 
 // NewTTSClient creates a TTS Client based on cfg.Audio.VoiceProvider.
 // lang is the TTS language (e.g. "zh-TW") and comes from the manifest at runtime.
@@ -26,12 +32,14 @@ func NewTTSClient(dryRun bool, cfg *config.Config, lang string) (Client, error) 
 			cfg.Audio.AiarkTTSVoiceID,
 		), nil
 	case "polly", "":
-		return NewPollyCLIClientWithLanguage(
+		client := NewPollyCLIClientWithLanguage(
 			cfg.AWS.Region,
 			cfg.AWS.AccessKeyID,
 			cfg.AWS.SecretAccessKey,
 			lang,
-		), nil
+		)
+		client.PronunciationProcessor = defaultPronunciationProcessor()
+		return client, nil
 	case "mock":
 		return &mockTTSClient{}, nil
 	default:
@@ -71,7 +79,9 @@ func NewMultiSpeakerTTSClientFromConfig(dryRun bool, cfg *config.Config, lang st
 	provider := cfg.Audio.VoiceProvider
 	switch provider {
 	case "polly", "":
-		return NewPollyMultiSpeakerClient(cfg.AWS.Region, cfg.AWS.AccessKeyID, cfg.AWS.SecretAccessKey, lang, reg), nil
+		client := NewPollyMultiSpeakerClient(cfg.AWS.Region, cfg.AWS.AccessKeyID, cfg.AWS.SecretAccessKey, lang, reg)
+		client.PronunciationProcessor = defaultPronunciationProcessor()
+		return client, nil
 	default:
 		return nil, fmt.Errorf("multi-speaker not supported for voice_provider: %s", provider)
 	}

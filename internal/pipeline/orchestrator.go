@@ -76,16 +76,36 @@ type PropsCriticResult struct {
 	OK     bool     `json:"ok"`
 }
 
+// PanelTextValidator checks each panel's Description against its Dialogue.
+type PanelTextValidator interface {
+	Validate(ctx context.Context, panels []domain.Panel) (*PanelTextValidationResult, error)
+}
+
+// PanelTextValidationResult holds the outcome of panel text validation.
+type PanelTextValidationResult struct {
+	OK     bool             `json:"ok"`
+	Issues []PanelTextIssue `json:"issues,omitempty"`
+}
+
+// PanelTextIssue describes a single panel's description-dialogue mismatch.
+type PanelTextIssue struct {
+	SceneNumber int    `json:"scene_number"`
+	PanelNumber int    `json:"panel_number"`
+	Score       int    `json:"score"`
+	Issue       string `json:"issue"`
+}
+
 // OrchestratorDeps groups external dependencies injected at construction time.
 // Dependency Inversion: orchestrator only knows interfaces, never concrete types.
 type OrchestratorDeps struct {
-	LLM          Transformer
-	Images       ImageBatcher
-	Audio        AudioBatcher
-	Music        MusicBatcher
-	Checkpoints  CheckpointGate
-	PropsCritic  PropsCriticEvaluator // optional; nil = disabled
-	Language     string               // BCP-47 language tag for TTS/dialogue
+	LLM               Transformer
+	Images            ImageBatcher
+	Audio             AudioBatcher
+	Music             MusicBatcher
+	Checkpoints       CheckpointGate
+	PropsCritic       PropsCriticEvaluator // optional; nil = disabled
+	PanelTextValidator PanelTextValidator   // optional; nil = disabled
+	Language          string               // BCP-47 language tag for TTS/dialogue
 	TargetPanels int                  // when > 0, LLM is instructed to generate exactly this many panels
 	Format       render.VideoFormat   // landscape (16:9) or portrait (9:16)
 	DryRun       bool
@@ -204,6 +224,19 @@ func (o *Orchestrator) Run(ctx context.Context, inputData []byte) (*PipelineResu
 // characters carries the LLM-generated character sheet from the storyboard stage; nil falls back to auto-extraction.
 func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, storyTitle string, panels []domain.Panel, bgmURL string, directives *domain.Directives, characters []domain.CharacterMeta) (*PipelineResult, error) {
 	var err error
+
+	// 0. Panel text validation: check Description ↔ Dialogue alignment
+	if o.deps.PanelTextValidator != nil {
+		if vr, verr := o.deps.PanelTextValidator.Validate(ctx, panels); verr != nil {
+			slog.Warn("Panel text validation failed, continuing", "error", verr)
+		} else if !vr.OK {
+			for _, issue := range vr.Issues {
+				slog.Warn("Panel text validation issue",
+					"scene", issue.SceneNumber, "panel", issue.PanelNumber,
+					"score", issue.Score, "issue", issue.Issue)
+			}
+		}
+	}
 
 	// Derive storyTitle fallback
 	if storyTitle == "" {

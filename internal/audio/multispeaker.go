@@ -9,6 +9,7 @@ import (
 
 	"github.com/baochen10luo/stagenthand/internal/character"
 	"github.com/baochen10luo/stagenthand/internal/domain"
+	"github.com/baochen10luo/stagenthand/internal/pronunciation"
 )
 
 // MultiSpeakerClient routes each DialogueLine to the correct TTS voice.
@@ -29,19 +30,24 @@ type PollyMultiSpeakerClient struct {
 	speakerClients map[string]*PollyCLIClient
 	// commandFactoryOverride, when set, is injected into newly-created speaker clients (for testing)
 	commandFactoryOverride func(ctx context.Context, name string, args ...string) *exec.Cmd
+	// PronunciationProcessor applies dictionary-based pronunciation overrides
+	// to the SSML text before synthesis (e.g., 破音字 correction).
+	PronunciationProcessor pronunciation.Processor
 }
 
 // NewPollyMultiSpeakerClient creates a multi-speaker TTS client backed by AWS Polly CLI.
 // defaultLanguage is used as the fallback voice for unknown speakers.
 func NewPollyMultiSpeakerClient(region, accessKey, secretKey, defaultLanguage string, registry character.Registry) *PollyMultiSpeakerClient {
+	defaultClient := NewPollyCLIClientWithLanguage(region, accessKey, secretKey, defaultLanguage)
 	return &PollyMultiSpeakerClient{
 		region:          region,
 		accessKey:       accessKey,
 		secretKey:       secretKey,
 		defaultLanguage: defaultLanguage,
 		registry:        registry,
-		defaultClient:   NewPollyCLIClientWithLanguage(region, accessKey, secretKey, defaultLanguage),
+		defaultClient:   defaultClient,
 		speakerClients:  make(map[string]*PollyCLIClient),
+		PronunciationProcessor: defaultClient.PronunciationProcessor,
 	}
 }
 
@@ -59,6 +65,9 @@ func (c *PollyMultiSpeakerClient) GenerateSpeechForLine(ctx context.Context, lin
 	}
 
 	ssml := formatSSMLWithEmotion(line.Text, line.Emotion)
+	if c.PronunciationProcessor != nil {
+		ssml = c.PronunciationProcessor.Process(ssml)
+	}
 	return pollyClient.SynthesizeSSML(ctx, ssml)
 }
 
@@ -96,6 +105,7 @@ func (c *PollyMultiSpeakerClient) clientForSpeaker(ctx context.Context, speaker 
 func (c *PollyMultiSpeakerClient) buildClientWithVoice(voiceID string) *PollyCLIClient {
 	base := NewPollyCLIClientWithLanguage(c.region, c.accessKey, c.secretKey, c.defaultLanguage)
 	base.voiceID = voiceID
+	base.PronunciationProcessor = c.PronunciationProcessor
 	if c.commandFactoryOverride != nil {
 		base.commandFactory = c.commandFactoryOverride
 	}

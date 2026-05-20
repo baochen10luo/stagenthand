@@ -155,12 +155,13 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	// Wire orchestrator
 	deps := pipeline.OrchestratorDeps{
-		LLM:          llmClient,
-		Images:       imgBatcher,
-		Audio:        audioBatcher,
-		Music:        pipeline.NewMusicClientBatcher(musicClient, shandHome),
-		Checkpoints:  ckptGate,
-		DryRun:       dryRun,
+		LLM:                llmClient,
+		Images:             imgBatcher,
+		Audio:              audioBatcher,
+		Music:              pipeline.NewMusicClientBatcher(musicClient, shandHome),
+		Checkpoints:        ckptGate,
+		PanelTextValidator: pipeline.NewLLMPanelTextValidator(llmClient),
+		DryRun:             dryRun,
 		SkipHITL:     pipelineSkipHITL,
 		Language:     pipelineLanguage,
 		TargetPanels: pipelineTargetPanels,
