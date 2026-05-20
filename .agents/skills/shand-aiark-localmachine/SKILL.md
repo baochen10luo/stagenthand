@@ -119,3 +119,98 @@ Rerunning the pipeline reuses existing images/audio via Smart Resume, but `remot
 - **LLM 5xx / GPU busy (409)**: Qwen waits up to 24 × 10s. Normal when image model just ran and GPU is releasing VRAM.
 - **Image VRAM**: ERNIE waits for GPU. Normal when Qwen is still loaded.
 - **Image 502**: ERNIE recycled after each request (`IMAGE_RECYCLE_AFTER_REQUEST=true`). Retries automatically.
+
+---
+
+## Audit checklist (optional — run after pipeline completes)
+
+Use these steps to verify quality of pronunciation correction, panel text alignment, and scene crossfade transitions.
+
+### 1. Pronunciation (破音字) audit
+
+**Automated — SSML tag check:**
+```bash
+# Test that <phoneme> tags appear for known 破音字
+go test -run TestOverrideProcessor ./internal/pronunciation/ -v
+```
+
+**Automated — STT round-trip** (requires aiark TTS + STT):
+```bash
+# 1. Generate speech from a sentence containing known 破音字
+curl -s https://aiark.com.tw/tts/v1/audio/speech \
+  -H "Authorization: Bearer datasys2026" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "aiark/qwen-tts",
+    "input": "主角的角色提供因為什麼瞭解目的音樂快樂",
+    "voice": "paul-chen-zh-tw-v1"
+  }' -o /tmp/pronun_test.wav
+
+# 2. Transcribe with aiark STT
+curl -s https://aiark.com.tw/v1/audio/transcriptions \
+  -H "Authorization: Bearer datasys2026" \
+  -F "file=@/tmp/pronun_test.wav" \
+  -F "model=whisper-1" | jq -r '.text'
+# Expected: "主角的角色提供因為什麼瞭解目的音樂快樂"
+# If words are misrecognised → pronunciation dict needs updating
+```
+
+**Manual — listen to generated video:**
+- Play the output mp4 around sections containing 角色, 主角, 提供, 因為, 什麼, 瞭解, 目的, 音樂, 快樂
+- Confirm the spoken pronunciation matches the intended meaning
+- If a word sounds wrong, add it to `internal/pronunciation/dictionary.go` → `DefaultDictionary()`
+
+### 2. Panel text validation audit
+
+**Automated — unit tests:**
+```bash
+go test -run TestPanelTextValidator ./internal/pipeline/ -v
+# Expected: known-mismatch → score ≤ 3, known-match → score ≥ 4
+```
+
+**Automated — grep pipeline logs:**
+```bash
+# Run pipeline and check for validation warnings
+echo "測試故事" | ./shand pipeline --skip-hitl --config ~/.shand/config-local.yaml 2>&1 | grep -E "Panel text validation|text_validation"
+# Each flagged panel shows score and reason
+```
+
+**Manual — review flagged panels:**
+- Higher false-positive rate → lower threshold from 3 to 2 in `textvalidator.go`
+- LLM consistently misses obvious mismatches → improve the validation prompt in `textvalidator.go` `validationPrompt`
+
+### 3. Scene crossfade audit
+
+**Automated — frame count test:**
+```bash
+# Test calculateMetadata subtracts overlap correctly
+go test -run TestSceneTransition ./internal/pipeline/ -v
+```
+
+**Automated — visibleIndices correctness:**
+```bash
+go test -run TestCrossfadeVisibleIndices ./internal/pipeline/ -v
+```
+
+**Manual — visual frame-by-frame:**
+```bash
+# Extract frames around scene boundary
+ffmpeg -i output.mp4 -vf "select=between(n\,START_FRAME\,END_FRAME)" -vsync 0 frames/%04d.png
+```
+- Check that at the scene boundary, previous scene fades out while next scene fades in (overlapping opacity)
+- Confirm crossfade duration matches `scene_transition_duration_ms` in `remotion_props.json`
+
+### 4. End-to-end pipeline audit
+
+Run a single story that exercises all three features:
+```bash
+echo "一個主角為了實現夢想提供音樂表演的故事。因為瞭解目的，所以角色很快樂。" | \
+  ./shand pipeline --skip-hitl --config ~/.shand/config-local.yaml --verbose 2>&1 | \
+  tee pipeline_audit.log
+
+# Check for:
+# - "Panel text validation issue" lines (text validator)
+# - Successful TTS generation with 破音字
+# - remotion_props.json contains scene_transition_duration_ms > 0
+grep -E "scene_transition|text_validation|Generating speech" pipeline_audit.log
+```

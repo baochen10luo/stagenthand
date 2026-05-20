@@ -89,29 +89,28 @@ const BGMAudio: React.FC<{
   return <Audio src={staticFile(bgmUrl)} loop volume={Math.max(0, finalVolume)} />;
 };
 
-// PanelWithTransition wraps a panel and applies scene-level crossfade.
-const PanelWithTransition: React.FC<{
+// PanelInSequence handles scene-level fade transitions within a <Series.Sequence>.
+// Each instance reads its own local frame (reset to 0 by <Series.Sequence>).
+const PanelInSequence: React.FC<{
   panel: RemotionProps["panels"][0];
   colorFilter: string;
-  localFrame: number;
-  panelDurationFrames: number;
+  durationInFrames: number;
   isSceneStart: boolean;
   isSceneEnd: boolean;
   sceneTransFrames: number;
-}> = ({ panel, colorFilter, localFrame, panelDurationFrames, isSceneStart, isSceneEnd, sceneTransFrames }) => {
-  let opacity = 1;
+}> = ({ panel, colorFilter, durationInFrames, isSceneStart, isSceneEnd, sceneTransFrames }) => {
+  const frame = useCurrentFrame();
 
+  let opacity = 1;
   if (isSceneStart && sceneTransFrames > 0) {
-    // Fade in from 0→1 over the first sceneTransFrames
     opacity = Math.min(opacity, interpolate(
-      localFrame, [0, sceneTransFrames], [0, 1],
+      frame, [0, sceneTransFrames], [0, 1],
       { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
     ));
   }
   if (isSceneEnd && sceneTransFrames > 0) {
-    // Fade out from 1→0 over the last sceneTransFrames
     opacity = Math.min(opacity, interpolate(
-      localFrame, [panelDurationFrames - sceneTransFrames, panelDurationFrames], [1, 0],
+      frame, [durationInFrames - sceneTransFrames, durationInFrames], [1, 0],
       { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
     ));
   }
@@ -124,7 +123,8 @@ const PanelWithTransition: React.FC<{
 };
 
 // ShortDrama is the main composition component.
-// Uses <Series> for within-scene panels and manual overlapping for scene crossfade.
+// Always uses <Series> so Remotion Studio shows all panel sequences in the timeline.
+// Scene transitions apply visual fade-in/out at scene boundaries within each sequence.
 export const ShortDrama: React.FC<RemotionProps> = ({
   panels,
   fps,
@@ -132,7 +132,6 @@ export const ShortDrama: React.FC<RemotionProps> = ({
   directives: rawDirectives,
 }) => {
   const { durationInFrames } = useVideoConfig();
-  const frame = useCurrentFrame();
   const dir = dd(rawDirectives);
 
   const sceneTransMs = rawDirectives?.scene_transition_duration_ms ?? 0;
@@ -155,61 +154,8 @@ export const ShortDrama: React.FC<RemotionProps> = ({
     );
   }
 
-  // When no scene transitions configured, use simple Series layout (original behavior)
-  if (sceneTransFrames === 0) {
-    return (
-      <AbsoluteFill style={{ backgroundColor: "#000" }}>
-        {bgm_url && (
-          <BGMAudio
-            bgmUrl={bgm_url}
-            directives={dir}
-            panels={panels}
-            fps={fps}
-            totalFrames={durationInFrames}
-          />
-        )}
-        <Series>
-          {panels.map((panel, i) => {
-            const durationInFrames = Math.max(1, Math.round(panel.duration_sec * fps));
-            return (
-              <Series.Sequence
-                key={`${panel.scene_number}-${panel.panel_number}-${i}`}
-                durationInFrames={durationInFrames}
-                premountFor={fps}
-              >
-                <PanelSlide panel={panel} colorFilter={dir.color_filter} />
-              </Series.Sequence>
-            );
-          })}
-        </Series>
-      </AbsoluteFill>
-    );
-  }
-
-  // Scene transitions enabled: compute timeline with crossfade overlap
-  const panelDurations = panels.map(p => Math.max(1, Math.round(p.duration_sec * fps)));
-  const naturalOffsets: number[] = [];
-  let acc = 0;
-  for (const d of panelDurations) {
-    naturalOffsets.push(acc);
-    acc += d;
-  }
-
-  // Determine scene boundaries
   const isSceneStart = panels.map((p, i) => i > 0 && p.scene_number !== panels[i - 1].scene_number);
   const isSceneEnd = panels.map((p, i) => i < panels.length - 1 && panels[i + 1].scene_number !== p.scene_number);
-
-  // Find visible panels at current frame (accounting for overlap)
-  const visibleIndices: number[] = [];
-  for (let i = 0; i < panels.length; i++) {
-    const start = naturalOffsets[i];
-    const end = start + panelDurations[i];
-    const effStart = isSceneStart[i] ? start - sceneTransFrames : start;
-    const effEnd = isSceneEnd[i] ? end + sceneTransFrames : end;
-    if (frame >= effStart && frame < effEnd) {
-      visibleIndices.push(i);
-    }
-  }
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000" }}>
@@ -222,18 +168,27 @@ export const ShortDrama: React.FC<RemotionProps> = ({
           totalFrames={durationInFrames}
         />
       )}
-      {visibleIndices.map(idx => (
-        <PanelWithTransition
-          key={`${panels[idx].scene_number}-${panels[idx].panel_number}-${idx}`}
-          panel={panels[idx]}
-          colorFilter={dir.color_filter}
-          localFrame={frame - naturalOffsets[idx]}
-          panelDurationFrames={panelDurations[idx]}
-          isSceneStart={isSceneStart[idx]}
-          isSceneEnd={isSceneEnd[idx]}
-          sceneTransFrames={sceneTransFrames}
-        />
-      ))}
+      <Series>
+        {panels.map((panel, i) => {
+          const d = Math.max(1, Math.round(panel.duration_sec * fps));
+          return (
+            <Series.Sequence
+              key={`${panel.scene_number}-${panel.panel_number}-${i}`}
+              durationInFrames={d}
+              premountFor={sceneTransFrames > 0 ? sceneTransFrames : fps}
+            >
+              <PanelInSequence
+                panel={panel}
+                colorFilter={dir.color_filter}
+                durationInFrames={d}
+                isSceneStart={isSceneStart[i]}
+                isSceneEnd={isSceneEnd[i]}
+                sceneTransFrames={sceneTransFrames}
+              />
+            </Series.Sequence>
+          );
+        })}
+      </Series>
     </AbsoluteFill>
   );
 };
