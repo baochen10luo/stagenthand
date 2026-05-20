@@ -1,29 +1,29 @@
 llm:
-  provider: openai
-  model: gpt-4o
+  provider: openai-compat
+  model: aiark/qwen36-35b-a3b
   api_key: ""
   base_url: ""
 
 image:
-  provider: nanobanana
-  model: amazon.titan-image-generator-v2:0
+  provider: aiark
+  model: aiark/ernie-image-turbo
   api_key: ""
-  region: us-west-2
-  width: 1024
-  height: 576
-  character_refs_dir: ""
+  base_url: https://aiark.com.tw/image
+  width: 576
+  height: 1024
+
+audio:
+  voice_provider: aiark
+  music_provider: jamendo
+  aiark_tts_base_url: https://aiark.com.tw/tts
+  aiark_tts_voice: paul-chen-zh-tw-v1
 
 video:
   enabled: false
-  provider: grok
-  api_key: ""
 
 remotion:
-  template_path: ""
+  template_path: ./remotion-template
   composition: ShortDrama
-
-notify:
-  discord_webhook: ""
 
 store:
   db_path: ~/.shand/shand.db

@@ -36,7 +36,7 @@ func BreakLongDialogueLines(panels []domain.Panel, format render.VideoFormat) []
 // break-punctuation and strip-punctuation from the output.
 //
 // Two tiers:
-//   - breakPunct — triggers a line break AND is removed (。！？，、；：.!?,;)
+//   - breakPunct — triggers a line break AND is removed (。！？，；：.!?,;)
 //   - stripPunct — removed silently without causing a break (quotes, brackets, etc.)
 func splitAtPunctuation(text string) []string {
 	text = strings.TrimSpace(text)
@@ -74,7 +74,7 @@ func isBreakPunct(r rune) bool {
 	switch r {
 	case '。', '！', '？', '.', '!', '?':
 		return true
-	case '，', '、', '；', '：', ',', ';', ':':
+	case '，', '；', '：', ',', ';', ':':
 		return true
 	}
 	return false

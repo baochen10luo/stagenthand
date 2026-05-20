@@ -103,6 +103,17 @@ SCP to MacBook:
 scp ~/.shand/projects/<project_id>/<filename>.mp4 paulchen@100.120.51.5:/Users/paulchen/Downloads/
 ```
 
+## Subtitle line breaking (portrait 9:16)
+
+`BreakLongDialogueLines` in `internal/remotion/subtitle.go` splits dialogue at punctuation before Remotion rendering. Two-tier punctuation:
+
+- **breakPunct** (。！？，；：.!?,;) — triggers line break AND is removed
+- **stripPunct** (「」『』（）【】〈〉…—～) — removed silently, no break
+
+`、` is deliberately **not** in breakPunct to avoid cutting enumeration phrases (e.g. "三、四分大的祖產田地"). Spaces within a phrase are preserved (e.g. "deadline 真的" stays intact).
+
+Rerunning the pipeline reuses existing images/audio via Smart Resume, but `remotion_props.json` is regenerated with new subtitle segments.
+
 ## Known retry behaviour
 
 - **LLM 5xx / GPU busy (409)**: Qwen waits up to 24 × 10s. Normal when image model just ran and GPU is releasing VRAM.
