@@ -28,6 +28,16 @@ echo "一個程序員愛上了咖啡師的故事" | ./shand pipeline --skip-hitl
 echo '{"title":"test"}' | ./shand story-to-outline --dry-run
 ```
 
+## Git
+
+```bash
+# Push to GitHub (multiple SSH keys — use the correct one)
+GIT_SSH_COMMAND="ssh -i ~/.ssh/github-baochen10luo -o IdentitiesOnly=yes" git push
+
+# Or set it per-repo:
+git config core.sshCommand "ssh -i ~/.ssh/github-baochen10luo -o IdentitiesOnly=yes"
+```
+
 ## Architecture
 
 ### Data Flow
