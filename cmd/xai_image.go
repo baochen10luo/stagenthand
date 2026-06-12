@@ -262,13 +262,16 @@ func buildXAIImageStoryAuditInput(story string, scenePaths []string) string {
 	}
 	b.WriteString(`
 Expected visual continuity:
-1. Moose walking alone in the forest.
-2. Moose visibly lost and nervous.
-3. Moose alone using a phone to call for help.
-4. Giraffe in a separate location receiving or listening to the call.
-5. Giraffe phone-call punchline angle, not physically standing with the moose in the same forest space.
+Infer the intended beat for each attached scene from the story text and the
+scene order. Each image should match its story beat without adding unrelated
+characters, explaining the joke in visible text, or contradicting character
+relationships.
 
-Audit for story fit, character consistency, phone-call spatial relationship, unwanted text/speech bubbles, whether any image explains the joke instead of just playing the timing, and animal anatomy. Flag extra arms, extra hands, duplicated forelegs, fused limbs, malformed hooves, or impossible limb counts as major issues.
+Audit for story fit, character consistency, spatial relationships, unwanted
+text/speech bubbles, whether any image explains the joke instead of just
+playing the timing, and anatomy. Flag extra arms, extra hands, duplicated
+limbs, fused limbs, malformed hands/feet, or impossible limb counts as major
+issues.
 `)
 	return b.String()
 }
@@ -284,7 +287,7 @@ Return JSON only with this shape:
     {"scene": 1, "fits_story": true, "notes": "..."}
   ]
 }
-Mark "revise" for any major story relationship error, especially if a phone-call scene shows characters physically together when they should be cross-cut between locations. Also mark "revise" for animal anatomy errors such as extra arms, six hands, duplicated forelegs, fused limbs, or malformed hooves.`
+Mark "revise" for any major story relationship error, continuity error, visible text leakage, or anatomy error such as extra arms, six hands, duplicated limbs, fused limbs, malformed hands/feet, or impossible limb counts.`
 
 func trimCLIStrings(values []string) []string {
 	out := make([]string, 0, len(values))
