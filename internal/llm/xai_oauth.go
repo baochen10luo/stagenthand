@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,6 +86,59 @@ func BuildXAIResponsesURL(baseURL string) string {
 
 // GenerateTransformation implements Client.
 func (c *XAIOAuthClient) GenerateTransformation(ctx context.Context, systemPrompt string, inputData []byte) ([]byte, error) {
+	return c.generateResponse(ctx, strings.TrimSpace(systemPrompt), []any{
+		map[string]any{
+			"role":    "user",
+			"content": string(inputData),
+		},
+	})
+}
+
+// XAIImageInput is a local image attached to a Responses API request.
+type XAIImageInput struct {
+	Data     []byte
+	MimeType string
+	Name     string
+}
+
+// GenerateVisionTransformation sends text plus images to xAI Responses.
+func (c *XAIOAuthClient) GenerateVisionTransformation(ctx context.Context, systemPrompt string, text string, images []XAIImageInput) ([]byte, error) {
+	content := make([]any, 0, len(images)+1)
+	text = strings.TrimSpace(text)
+	if text != "" {
+		content = append(content, map[string]any{
+			"type": "input_text",
+			"text": text,
+		})
+	}
+	for i, image := range images {
+		if len(image.Data) == 0 {
+			return nil, fmt.Errorf("xAI vision image %d is empty", i+1)
+		}
+		mimeType := strings.TrimSpace(image.MimeType)
+		if mimeType == "" {
+			mimeType = http.DetectContentType(image.Data)
+		}
+		if !strings.HasPrefix(mimeType, "image/") {
+			return nil, fmt.Errorf("xAI vision image %d is not an image: %s", i+1, mimeType)
+		}
+		content = append(content, map[string]any{
+			"type":      "input_image",
+			"image_url": "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(image.Data),
+		})
+	}
+	if len(content) == 0 {
+		return nil, errors.New("xAI vision input is empty")
+	}
+	return c.generateResponse(ctx, strings.TrimSpace(systemPrompt), []any{
+		map[string]any{
+			"role":    "user",
+			"content": content,
+		},
+	})
+}
+
+func (c *XAIOAuthClient) generateResponse(ctx context.Context, systemPrompt string, input []any) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -110,13 +164,8 @@ func (c *XAIOAuthClient) GenerateTransformation(ctx context.Context, systemPromp
 	}
 	body := request{
 		Model:        c.model,
-		Instructions: strings.TrimSpace(systemPrompt),
-		Input: []any{
-			map[string]any{
-				"role":    "user",
-				"content": string(inputData),
-			},
-		},
+		Instructions: systemPrompt,
+		Input:        input,
 	}
 
 	reqBody, err := json.Marshal(body)

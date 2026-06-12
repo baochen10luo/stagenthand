@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 5 ]]; then
-  echo "usage: $0 <timeline.mp4> <narration.txt> <output-dir> [voice=eve] [language=zh]" >&2
+if [[ $# -lt 3 || $# -gt 7 ]]; then
+  echo "usage: $0 <timeline.mp4> <narration.txt> <output-dir> [voice=eve] [language=zh] [subtitles.ass] [output-name=output_xai_voice.mp4]" >&2
   exit 64
 fi
 
@@ -11,6 +11,12 @@ narration_file="$2"
 output_dir="$3"
 voice="${4:-eve}"
 language="${5:-zh}"
+subtitle_file="${6:-}"
+output_name="${7:-output_xai_voice.mp4}"
+if [[ $# -eq 6 && "$subtitle_file" == *.mp4 ]]; then
+  output_name="$subtitle_file"
+  subtitle_file=""
+fi
 
 if [[ ! -f "$timeline" ]]; then
   echo "timeline not found: $timeline" >&2
@@ -18,6 +24,10 @@ if [[ ! -f "$timeline" ]]; then
 fi
 if [[ ! -f "$narration_file" ]]; then
   echo "narration file not found: $narration_file" >&2
+  exit 66
+fi
+if [[ -n "$subtitle_file" && ! -f "$subtitle_file" ]]; then
+  echo "subtitle file not found: $subtitle_file" >&2
   exit 66
 fi
 
@@ -35,7 +45,11 @@ if [[ -z "$voice_safe" ]]; then
 fi
 
 audio_path="$output_dir/narration_xai_${voice_safe}.mp3"
-final_path="$output_dir/output_xai_voice.mp4"
+if [[ "$output_name" = /* || "$output_name" == */* ]]; then
+  final_path="$output_name"
+else
+  final_path="$output_dir/$output_name"
+fi
 preview_path="$output_dir/preview_frame.jpg"
 probe_path="$output_dir/ffprobe.txt"
 
@@ -48,11 +62,15 @@ probe_path="$output_dir/ffprobe.txt"
 video_duration="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$timeline")"
 audio_duration="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$audio_path")"
 pad_duration="$(awk -v a="$audio_duration" -v v="$video_duration" 'BEGIN { p=a-v; if (p < 0) p=0; printf "%.3f", p + 0.250 }')"
+video_filter="tpad=stop_mode=clone:stop_duration=${pad_duration},setpts=PTS-STARTPTS"
+if [[ -n "$subtitle_file" ]]; then
+  video_filter="subtitles=filename=${subtitle_file},${video_filter}"
+fi
 
 ffmpeg -hide_banner -y \
   -i "$timeline" \
   -i "$audio_path" \
-  -filter_complex "[0:v]tpad=stop_mode=clone:stop_duration=${pad_duration},setpts=PTS-STARTPTS[v]" \
+  -filter_complex "[0:v]${video_filter}[v]" \
   -map "[v]" \
   -map 1:a \
   -c:v libx264 \

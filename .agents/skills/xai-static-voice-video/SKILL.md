@@ -18,8 +18,12 @@ xAI OAuth voice.
 - Use a newly rendered HyperFrames silent timeline as the video source.
 - Generate narration/dialogue audio with `shand xai voice probe`.
 - Do not use Remotion, local TTS, Polly, Qwen, or browser automation.
+- Add visible subtitles with an ASS subtitle file when the rough cut has voice.
+- Run an xAI OAuth vision audit on generated stills before final packaging.
 - Use FFmpeg for muxing/final packaging and `ffprobe` for validation.
 - Keep outputs under `outputs/<slug>/`.
+- Use meaningful final filenames, for example
+  `<story-slug>-grok-ref-xai-voice-v1.mp4`.
 
 ## Workflow
 
@@ -33,15 +37,25 @@ xAI OAuth voice.
    `scripts/build_still_timeline.js`.
 5. Put narration/dialogue text in a UTF-8 text file. Do not explain the joke;
    leave timing around the punchline.
-6. Run `scripts/render_static_voice_video.sh` to create xAI voice and mux audio.
-7. Verify the final MP4 has:
+6. Write `subtitles.ass` with short visible subtitle lines. Keep subtitles to
+   the played timing and do not add joke explanations.
+7. Audit stills with `shand xai image audit-story`. The audit must use an xAI
+   OAuth vision-capable model and check story fit, character consistency,
+   spatial relationships, unwanted text/speech bubbles, and whether phone-call
+   scenes are cross-cut instead of showing separated callers physically
+   together.
+8. Run `scripts/render_static_voice_video.sh` to create xAI voice and mux
+   audio. `build_still_timeline.js` automatically overlays
+   `outputs/<slug>/subtitles.ass` into the HyperFrames timeline when that file
+   exists.
+9. Verify the final MP4 has:
    - H.264 video
    - yuv420p
    - intended dimensions, usually 720x1280
    - stable 24 fps
    - AAC audio
    - duration long enough for the xAI voice track
-5. Inspect `preview_frame.jpg`.
+10. Inspect `preview_frame.jpg`.
 
 ## Script
 
@@ -66,7 +80,8 @@ SHAND_BIN=./shand .agents/skills/xai-static-voice-video/scripts/render_static_vo
   outputs/my-static-video/narration.txt \
   outputs/my-static-video \
   eve \
-  zh
+  zh \
+  my-static-video-grok-ref-xai-voice-v1.mp4
 ```
 
 If `SHAND_BIN` is unset, the script builds a temporary `shand` binary in the
@@ -75,7 +90,7 @@ output directory.
 Outputs:
 
 - `narration_xai_<voice>.mp3`
-- `output_xai_voice.mp4`
+- `output_xai_voice.mp4` or the requested final filename
 - `preview_frame.jpg`
 - `ffprobe.txt`
 
@@ -94,12 +109,25 @@ shand xai image edit \
   --prompt "the same moose walks alone in a forest, no text" \
   --reference outputs/my-video/characters/moose_sheet.png \
   --output outputs/my-video/stills/scene_001.png
+
+shand xai image audit-story \
+  --story "Moose gets lost and calls giraffe by phone; final punchline is cross-cut, not co-located." \
+  --scene outputs/my-video/stills/scene_001.png \
+  --scene outputs/my-video/stills/scene_002.png \
+  --scene outputs/my-video/stills/scene_003.png \
+  --scene outputs/my-video/stills/scene_004.png \
+  --scene outputs/my-video/stills/scene_005.png \
+  --output outputs/my-video/audit_xai.json
 ```
 
 ## Notes
 
 - If the generated audio is longer than the timeline, the script pads the final
   visual by freezing the last frame so the punchline is not cut off.
+- If a phone-call scene shows both callers standing in the same physical place,
+  regenerate that still before final packaging. Prefer a reverse angle,
+  close-up, or split-screen composition that clearly communicates remote
+  contact.
 - Store character sheets under `outputs/<slug>/characters/` and scene stills
   under `outputs/<slug>/stills/`.
 - Keep reference prompts explicit: name the same character, body shape, colors,

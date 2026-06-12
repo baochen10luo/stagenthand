@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -350,6 +351,54 @@ func TestXAIOAuthClient_GenerateTransformation_RejectsEmptyContentAfterCleanup(t
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "response was empty after cleanup")
+}
+
+func TestXAIOAuthClient_GenerateVisionTransformation_SendsImageInputs(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/responses", r.URL.Path)
+		require.Equal(t, "Bearer oauth-access", r.Header.Get("Authorization"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output_text": "{\"status\":\"pass\"}",
+		})
+	}))
+	defer server.Close()
+
+	client := llm.NewXAIOAuthClient(server.URL, "grok-4.3", stubBearerTokenSource{token: "oauth-access"}, server.Client())
+	got, err := client.GenerateVisionTransformation(context.Background(), "Audit prompt", "story text", []llm.XAIImageInput{
+		{Data: []byte{0xff, 0xd8, 0xff, 0xdb}, MimeType: "image/jpeg"},
+	})
+
+	require.NoError(t, err)
+	require.JSONEq(t, `{"status":"pass"}`, string(got))
+	require.Equal(t, "grok-4.3", captured["model"])
+	require.Equal(t, "Audit prompt", captured["instructions"])
+	input := captured["input"].([]any)
+	require.Len(t, input, 1)
+	msg := input[0].(map[string]any)
+	require.Equal(t, "user", msg["role"])
+	content := msg["content"].([]any)
+	require.Len(t, content, 2)
+	require.Equal(t, map[string]any{"type": "input_text", "text": "story text"}, content[0])
+	image := content[1].(map[string]any)
+	require.Equal(t, "input_image", image["type"])
+	require.True(t, strings.HasPrefix(image["image_url"].(string), "data:image/jpeg;base64,"))
+}
+
+func TestXAIOAuthClient_GenerateVisionTransformation_RejectsNonImages(t *testing.T) {
+	t.Parallel()
+
+	client := llm.NewXAIOAuthClient("https://example.invalid", "grok-4.3", stubBearerTokenSource{token: "oauth-access"}, failLLMHTTPDoer{t: t})
+	got, err := client.GenerateVisionTransformation(context.Background(), "Audit prompt", "story text", []llm.XAIImageInput{
+		{Data: []byte("not an image"), MimeType: "text/plain"},
+	})
+
+	require.Error(t, err)
+	require.Nil(t, got)
+	require.Contains(t, err.Error(), "not an image")
 }
 
 func TestBuildXAIResponsesURL(t *testing.T) {
