@@ -1,12 +1,40 @@
 ---
 name: xai-static-voice-video
-description: Create voiced static or I2V story videos in StagentHand with Grok xAI OAuth image generation/editing, character reference sheets for consistency, xAI OAuth TTS, optional xAI Image-to-Video, HyperFrames timelines, FFmpeg final muxing, preview extraction, and ffprobe validation. Use when the user wants a rough-cut/static-image video or an I2V upgrade with voice, no SVG-drawn art, no Remotion, no local TTS/model, and xAI OAuth as the only AI provider.
+description: Create voiced non-I2V static story videos in StagentHand with Grok xAI OAuth image generation/editing, character reference sheets for consistency, xAI OAuth TTS, HyperFrames still-image timelines, FFmpeg final muxing, preview extraction, and ffprobe validation. Use when the user wants a static-image video with voice, no SVG-drawn art, no Remotion, no local TTS/model, no I2V unless explicitly requested, and xAI OAuth as the only AI provider.
 ---
 
 # xAI Static Voice Video
 
-Use this skill for static visual rough cuts and I2V upgrades that need
-Grok-generated stills, optional Grok Image-to-Video, and xAI OAuth voice.
+Use this skill first for the non-I2V static pipeline: Grok-generated stills,
+HyperFrames still-image timeline, xAI OAuth voice, and FFmpeg final muxing.
+I2V is an explicit upgrade path only; do not use it unless the user asks for
+I2V, animation, moving clips, or a video-generation upgrade.
+
+## Default Non-I2V Pipeline
+
+This is the default route for voiced story tests:
+
+```text
+story
+  -> xAI OAuth shot plan
+  -> Grok character sheets
+  -> Grok referenced stills
+  -> subtitles.ass
+  -> xAI OAuth vision audit
+  -> HyperFrames still-image timeline
+  -> xAI OAuth voice
+  -> FFmpeg mux/finalize
+  -> ffprobe + preview extraction
+```
+
+Hard rules:
+
+- Do not run `shand xai video i2v`.
+- Do not generate MP4 clips per scene.
+- Do not use Remotion, browser automation, local image models, or local TTS.
+- Use `timeline_hyperframes.mp4` from still images as the video source.
+- Final filename should identify this as non-I2V by omitting `i2v`, for example
+  `<story-slug>-grok-ref-xai-voice-v1.mp4`.
 
 ## Contract
 
@@ -15,8 +43,8 @@ Grok-generated stills, optional Grok Image-to-Video, and xAI OAuth voice.
 - Generate character sheets before scene stills. Treat character sheets as the
   source of truth for character appearance.
 - Generate scene stills from prompts plus character/style reference images.
-- For static rough cuts, use a newly rendered HyperFrames still-image timeline
-  as the video source.
+- For the default static pipeline, use a newly rendered HyperFrames still-image
+  timeline as the video source.
 - For I2V upgrades, use the audited still as the first frame/source image for
   `shand xai video i2v`; do not ask I2V to redesign the scene.
 - Generate narration/dialogue audio with `shand xai voice probe`.
@@ -49,7 +77,7 @@ Grok-generated stills, optional Grok Image-to-Video, and xAI OAuth voice.
   the dubbed voice.
 - In HITL review, the `字幕：` field is the main final human-edit entry point.
 
-## Workflow
+## Static Workflow
 
 1. Write a shot plan with a fixed visual style and concise dialogue timing.
 2. Generate one character sheet per recurring character with front, side, and
@@ -83,7 +111,9 @@ Grok-generated stills, optional Grok Image-to-Video, and xAI OAuth voice.
 
 ## I2V Upgrade Workflow
 
-Use this only after the static stills pass story and anatomy audit.
+Use this only when the user explicitly asks for I2V or animation, and only
+after the static stills pass story and anatomy audit. If the user asks for a
+"video" without saying I2V, keep the static workflow.
 
 1. Treat each approved still as the source image and first frame.
 2. Generate one short I2V clip per still with `shand xai video i2v`.
