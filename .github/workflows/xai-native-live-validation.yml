@@ -1,0 +1,90 @@
+name: xAI Native Live Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      panels:
+        description: "Number of xAI video shots to generate"
+        required: true
+        default: "3"
+      episodes:
+        description: "Number of xAI-native episodes to generate"
+        required: true
+        default: "1"
+      batch_concurrency:
+        description: "Max concurrent xAI-native episodes"
+        required: true
+        default: "1"
+      story:
+        description: "Story prompt for the live validation run"
+        required: true
+        default: "A night-shift engineer follows a runaway delivery robot through rainy Taipei and discovers it only wants to bring flowers to a hospital."
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.23"
+  NODE_VERSION: "20"
+
+jobs:
+  validate:
+    name: xAI Native Live Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Build shand
+        run: |
+          mkdir -p /tmp/gobuild
+          GOTMPDIR=/tmp/gobuild go build -o /tmp/shand .
+
+      - name: Restore Hermes xAI OAuth credentials
+        env:
+          HERMES_AUTH_JSON_B64: ${{ secrets.HERMES_AUTH_JSON_B64 }}
+        run: |
+          if [ -z "${HERMES_AUTH_JSON_B64:-}" ]; then
+            echo "HERMES_AUTH_JSON_B64 is not configured; live validation will be skipped."
+            exit 0
+          fi
+          mkdir -p "$HOME/.hermes"
+          printf '%s' "$HERMES_AUTH_JSON_B64" | base64 -d > "$HOME/.hermes/auth.json"
+          chmod 600 "$HOME/.hermes/auth.json"
+
+      - name: Run xAI-native live validation
+        env:
+          SHAND_BIN: /tmp/shand
+          OUT_DIR: ${{ runner.temp }}/xai-native-live
+          RUN_XAI_LIVE_VALIDATION: "1"
+          ALLOW_SKIP: "1"
+          PANELS: ${{ inputs.panels }}
+          EPISODES: ${{ inputs.episodes }}
+          BATCH_CONCURRENCY: ${{ inputs.batch_concurrency }}
+          STORY: ${{ inputs.story }}
+        run: scripts/validate-xai-native-live.sh
+
+      - name: Upload xAI-native live artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xai-native-live-validation
+          path: ${{ runner.temp }}/xai-native-live
+          if-no-files-found: ignore
+          retention-days: 7

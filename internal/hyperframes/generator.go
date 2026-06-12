@@ -49,7 +49,7 @@ var templateFuncs = template.FuncMap{
 }
 
 // GenerateProject writes index.html and a minimal package.json into projectDir,
-// ready for `npx @hyperframes/cli render index.html`.
+// ready for `npx --yes hyperframes@0.6.55 render`.
 func GenerateProject(props domain.RemotionProps, projectDir string, cfg Config) error {
 	panels, totalDur := prepareResolvedPanels(props, cfg.ShandHome)
 

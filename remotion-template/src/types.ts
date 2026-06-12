@@ -20,7 +20,7 @@ export type PanelDirective = {
   subtitle_font_size?: number;
   subtitle_position?: "bottom" | "top" | "center";
   // Extended visual design fields
-  bg_style?: "card" | "fullbleed" | "title";
+  bg_style?: "card" | "fullbleed" | "title" | "blur" | "gradient";
   text_x?: "left" | "center" | "right";
   text_y?: "top" | "middle" | "bottom";
   text_rotate?: number;

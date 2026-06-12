@@ -39,6 +39,8 @@ type OpenAICompatibleClient struct {
 	model          string
 	noJSONMode     bool // skip response_format:json_object (servers that reject it)
 	stripThinkTags bool // strip <think>…</think> from reasoning-model responses
+	retryMax       int
+	retryDelay     time.Duration
 }
 
 // ClientOptions configures optional behaviour of OpenAICompatibleClient.
@@ -46,6 +48,8 @@ type ClientOptions struct {
 	ExtraHeaders   map[string]string
 	NoJSONMode     bool // skip response_format:json_object
 	StripThinkTags bool // strip <think>…</think> blocks
+	RetryMax       int  // negative disables retries; zero uses production default
+	RetryDelay     time.Duration
 }
 
 // NewOpenAICompatibleClient handles exponential backoff and sets up resty.
@@ -75,12 +79,25 @@ func NewOpenAICompatibleClientWithOptions(baseURL, apiKey, model string, opts Cl
 		r.SetHeader(k, v)
 	}
 
+	retryMax := llmRetryMax
+	if opts.RetryMax < 0 {
+		retryMax = 0
+	} else if opts.RetryMax > 0 {
+		retryMax = opts.RetryMax
+	}
+	retryDelay := llmRetryDelay
+	if opts.RetryDelay > 0 {
+		retryDelay = opts.RetryDelay
+	}
+
 	return &OpenAICompatibleClient{
 		client:         r,
 		apiKey:         apiKey,
 		model:          model,
 		noJSONMode:     opts.NoJSONMode,
 		stripThinkTags: opts.StripThinkTags,
+		retryMax:       retryMax,
+		retryDelay:     retryDelay,
 	}
 }
 
@@ -128,7 +145,7 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= llmRetryMax; attempt++ {
+	for attempt := 0; attempt <= c.retryMax; attempt++ {
 		var resBody ChatResponse
 		req := c.client.R().
 			SetContext(ctx).
@@ -141,12 +158,12 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 		resp, err := req.Post("/chat/completions")
 		if err != nil {
 			lastErr = fmt.Errorf("http request failed: %w", err)
-			if attempt < llmRetryMax {
-				fmt.Fprintf(os.Stderr, "[Info] LLM request error，%s 後重試 (%d/%d): %v\n", llmRetryDelay, attempt+1, llmRetryMax, err)
+			if attempt < c.retryMax {
+				fmt.Fprintf(os.Stderr, "[Info] LLM request error，%s 後重試 (%d/%d): %v\n", c.retryDelay, attempt+1, c.retryMax, err)
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(llmRetryDelay):
+				case <-time.After(c.retryDelay):
 				}
 			}
 			continue
@@ -162,16 +179,16 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 			if resp.StatusCode() < 500 && resp.StatusCode() != 409 {
 				return nil, lastErr
 			}
-			if attempt < llmRetryMax {
+			if attempt < c.retryMax {
 				label := "5xx"
 				if resp.StatusCode() == 409 {
 					label = "GPU busy (409)"
 				}
-				fmt.Fprintf(os.Stderr, "[Info] LLM %s，%s 後重試 (%d/%d)...\n", label, llmRetryDelay, attempt+1, llmRetryMax)
+				fmt.Fprintf(os.Stderr, "[Info] LLM %s，%s 後重試 (%d/%d)...\n", label, c.retryDelay, attempt+1, c.retryMax)
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(llmRetryDelay):
+				case <-time.After(c.retryDelay):
 				}
 			}
 			continue
@@ -189,5 +206,5 @@ func (c *OpenAICompatibleClient) GenerateTransformation(ctx context.Context, sys
 		return []byte(content), nil
 	}
 
-	return nil, fmt.Errorf("LLM 重試 %d 次仍失敗: %w", llmRetryMax, lastErr)
+	return nil, fmt.Errorf("LLM 重試 %d 次仍失敗: %w", c.retryMax, lastErr)
 }

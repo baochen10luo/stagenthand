@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,46 +17,50 @@ import (
 
 	"github.com/baochen10luo/stagenthand/config"
 	"github.com/baochen10luo/stagenthand/internal/audio"
+	xauth "github.com/baochen10luo/stagenthand/internal/auth/xai"
 	"github.com/baochen10luo/stagenthand/internal/character"
 	"github.com/baochen10luo/stagenthand/internal/domain"
+	"github.com/baochen10luo/stagenthand/internal/hyperframes"
 	"github.com/baochen10luo/stagenthand/internal/image"
 	"github.com/baochen10luo/stagenthand/internal/llm"
 	"github.com/baochen10luo/stagenthand/internal/pipeline"
-	"github.com/baochen10luo/stagenthand/internal/hyperframes"
 	"github.com/baochen10luo/stagenthand/internal/remotion"
 	"github.com/baochen10luo/stagenthand/internal/render"
 	"github.com/baochen10luo/stagenthand/internal/series"
 	"github.com/baochen10luo/stagenthand/internal/store"
 	"github.com/baochen10luo/stagenthand/internal/video"
+	xpipe "github.com/baochen10luo/stagenthand/internal/xaipipeline"
 	"github.com/spf13/cobra"
 )
 
 var (
-	pipelineSkipHITL     bool
-	pipelineSkipLLM      bool
-	pipelineOutputDir    string
-	pipelineLanguage     string
-	pipelineMaxRetries   int
-	pipelineEpisodes     int
-	pipelineBatchConc    int
-	pipelineFormat       string // "landscape" or "portrait"
-	pipelineMultiSpeaker bool
-	pipelineSeriesMemory bool
-	pipelineSeriesWindow int
-	pipelineVideoBackend string // "remotion" (default) or "nova_reel" or "grok_browser"
-	pipelineImageDir     string // pre-existing image directory; skips image generation when set
-	pipelineTargetPanels int    // when > 0, LLM is instructed to generate exactly this many panels
-	pipelineI2V          bool   // image-to-video mode: use --image-dir illustrations as I2V references
-	pipelineFaithful     bool   // when true, LLM only splits original text — no invention or embellishment
-	pipelineVerbatim     bool   // when true, single-pass LLM segments text verbatim; skips outline/storyboard
-	pipelineNarration    bool   // when true, single-pass LLM rewrites story as narrator voice; all speaker: ""
+	pipelineSkipHITL        bool
+	pipelineSkipLLM         bool
+	pipelineOutputDir       string
+	pipelineLanguage        string
+	pipelineMaxRetries      int
+	pipelineEpisodes        int
+	pipelineBatchConc       int
+	pipelineFormat          string // "landscape" or "portrait"
+	pipelineMultiSpeaker    bool
+	pipelineSeriesMemory    bool
+	pipelineSeriesWindow    int
+	pipelineVideoBackend    string // "xai_oauth" (default; "xai-oauth" alias), "remotion", "nova_reel", deprecated "grok_browser", or "hyperframes"
+	pipelineImageDir        string // pre-existing image directory; skips image generation when set
+	pipelineTargetPanels    int    // when > 0, LLM is instructed to generate exactly this many panels
+	pipelineI2V             bool   // image-to-video mode: use --image-dir illustrations as I2V references
+	pipelineFaithful        bool   // when true, LLM only splits original text — no invention or embellishment
+	pipelineVerbatim        bool   // when true, single-pass LLM segments text verbatim; skips outline/storyboard
+	pipelineNarration       bool   // when true, single-pass LLM rewrites story as narrator voice; all speaker: ""
+	pipelineForceReplan     bool   // xAI-native: ignore matching manifest and call planner again
+	pipelineForceRegenerate bool   // xAI-native: regenerate xAI shot videos even when cache is valid
 )
 
 var pipelineCmd = &cobra.Command{
 	Use:   "pipeline",
 	Short: "Run the full AI short drama pipeline end-to-end",
 	Long: `Reads a story prompt or storyboard JSON from stdin.
-Runs the complete pipeline: story → outline → storyboard → images → remotion props → mp4.
+	Runs the complete pipeline: story → outline → storyboard → panels → xAI OAuth video shots → mp4.
 
 Output files are written to --output-dir (default: ~/.shand/projects/<project-id>/).
 Use --skip-hitl for a fully automated run without human checkpoints.
@@ -71,10 +76,44 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		return stageError("pipeline", "stdin_read_error", fmt.Sprintf("reading stdin: %v", err))
 	}
 
-	// Validate --i2v flag: requires --video-backend grok_browser
-	if pipelineI2V && resolveVideoBackend() != "grok_browser" {
-		return stageError("pipeline", "invalid_flag",
-			"--i2v requires --video-backend grok_browser")
+	videoBackend := resolveVideoBackend()
+	xaiVideoBackend := videoBackend == "xai_oauth"
+
+	if err := validatePipelineVideoMode(pipelineVideoModeOptions{
+		Backend:          videoBackend,
+		ImageDir:         pipelineImageDir,
+		I2V:              pipelineI2V,
+		SkipLLM:          pipelineSkipLLM,
+		Episodes:         pipelineEpisodes,
+		TargetPanels:     pipelineTargetPanels,
+		Format:           pipelineFormat,
+		BatchConcurrency: pipelineBatchConc,
+		ForceReplan:      pipelineForceReplan,
+		ForceRegenerate:  pipelineForceRegenerate,
+		SeriesMemory:     pipelineSeriesMemory,
+		MultiSpeaker:     pipelineMultiSpeaker,
+		Faithful:         pipelineFaithful,
+		Verbatim:         pipelineVerbatim,
+		Narration:        pipelineNarration,
+		MaxRetries:       pipelineMaxRetries,
+	}); err != nil {
+		return stageError("pipeline", "invalid_flag", err.Error())
+	}
+
+	if shouldUseXAINativeBatchPipeline(videoBackend) {
+		result, runErr := runXAINativeBatchPipeline(cmd.Context(), inputData, cfg)
+		if runErr != nil {
+			return stageError("pipeline", "xai_pipeline_error", runErr.Error())
+		}
+		return json.NewEncoder(os.Stdout).Encode(xaiNativeBatchSummary(result, videoBackend, dryRun))
+	}
+
+	if shouldUseXAINativePipeline(videoBackend) {
+		result, runErr := runXAINativePipeline(cmd.Context(), inputData, cfg)
+		if runErr != nil {
+			return stageError("pipeline", "xai_pipeline_error", runErr.Error())
+		}
+		return json.NewEncoder(os.Stdout).Encode(xaiNativeSummary(result, videoBackend, dryRun))
 	}
 
 	// Build LLM client
@@ -93,7 +132,10 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	// Build image batcher — use pre-existing images if --image-dir is set
 	videoFormat := render.VideoFormat(pipelineFormat)
 	var imgBatcher pipeline.ImageBatcher
-	if pipelineImageDir != "" {
+	skipImageGeneration := xaiVideoBackend && pipelineImageDir == ""
+	if skipImageGeneration {
+		imgBatcher = nil
+	} else if pipelineImageDir != "" {
 		if pipelineI2V {
 			imgBatcher = pipeline.NewPrebuiltImageBatcherWithOffset(pipelineImageDir, shandHome, 1)
 		} else {
@@ -119,30 +161,21 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	ckptRepo := store.NewGormCheckpointRepository(db)
 	ckptGate := pipeline.NewCheckpointGate(ckptRepo)
 
-	// Build audio client via factory (respects voice_provider config)
-	audioClient, err := audio.NewTTSClient(dryRun, cfg, pipelineLanguage)
-	if err != nil {
-		return fmt.Errorf("failed to create TTS client: %w", err)
-	}
-
-	// Build music client via factory (respects music_provider config)
-	musicClient, err := audio.NewMusicClientFromConfig(dryRun, cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create music client: %w", err)
-	}
-
 	// Build critic evaluator if max retries > 0 and AWS credentials are available
 	var criticEvaluator pipeline.VideoCriticEvaluator
-	if pipelineMaxRetries > 0 && cfg != nil && cfg.AWS.AccessKeyID != "" {
+	if shouldRenderStatic(videoBackend) && pipelineMaxRetries > 0 && cfg != nil && cfg.AWS.AccessKeyID != "" {
 		criticClient, criticErr := llm.NewVideoCriticClient(cfg)
 		if criticErr == nil {
 			criticEvaluator = newVideoCriticAdapter(video.NewCritic(criticClient))
 		}
 	}
 
-	// Build audio batcher: multi-speaker or legacy
+	// Build audio batcher: xAI video is self-contained, so it does not call TTS.
 	var audioBatcher pipeline.AudioBatcher
-	if pipelineMultiSpeaker {
+	skipAudioGeneration := xaiVideoBackend
+	if skipAudioGeneration {
+		audioBatcher = nil
+	} else if pipelineMultiSpeaker {
 		reg := character.NewFileRegistry(shandHome)
 		multiSpeakerClient, msErr := audio.NewMultiSpeakerTTSClientFromConfig(dryRun, cfg, pipelineLanguage, reg)
 		if msErr != nil {
@@ -150,7 +183,21 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		}
 		audioBatcher = pipeline.NewMultiSpeakerAudioBatcher(multiSpeakerClient, shandHome)
 	} else {
+		audioClient, audioErr := audio.NewTTSClient(dryRun, cfg, pipelineLanguage)
+		if audioErr != nil {
+			return fmt.Errorf("failed to create TTS client: %w", audioErr)
+		}
 		audioBatcher = pipeline.NewAudioClientBatcher(audioClient, shandHome)
+	}
+
+	var musicBatcher pipeline.MusicBatcher
+	skipMusicGeneration := xaiVideoBackend
+	if !skipMusicGeneration {
+		musicClient, musicErr := audio.NewMusicClientFromConfig(dryRun, cfg)
+		if musicErr != nil {
+			return fmt.Errorf("failed to create music client: %w", musicErr)
+		}
+		musicBatcher = pipeline.NewMusicClientBatcher(musicClient, shandHome)
 	}
 
 	// Wire orchestrator
@@ -158,17 +205,20 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		LLM:                llmClient,
 		Images:             imgBatcher,
 		Audio:              audioBatcher,
-		Music:              pipeline.NewMusicClientBatcher(musicClient, shandHome),
+		Music:              musicBatcher,
 		Checkpoints:        ckptGate,
 		PanelTextValidator: pipeline.NewLLMPanelTextValidator(llmClient),
 		DryRun:             dryRun,
-		SkipHITL:     pipelineSkipHITL,
-		Language:     pipelineLanguage,
-		TargetPanels: pipelineTargetPanels,
-		Format:       videoFormat,
-		Faithful:     pipelineFaithful,
-		Verbatim:     pipelineVerbatim,
-		Narration:    pipelineNarration,
+		SkipHITL:           pipelineSkipHITL,
+		SkipImages:         skipImageGeneration,
+		SkipAudio:          skipAudioGeneration,
+		SkipMusic:          skipMusicGeneration,
+		Language:           pipelineLanguage,
+		TargetPanels:       pipelineTargetPanels,
+		Format:             videoFormat,
+		Faithful:           pipelineFaithful,
+		Verbatim:           pipelineVerbatim,
+		Narration:          pipelineNarration,
 	}
 	orch := pipeline.NewOrchestrator(deps)
 
@@ -316,8 +366,9 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 
 	timestamp := time.Now().Format("20060102_150405")
 
-	// Default render (always runs when max-retries == 0)
-	if pipelineMaxRetries == 0 {
+	// Static render is skipped for xAI OAuth video because xAI generates the
+	// final motion shots directly.
+	if shouldRenderStatic(videoBackend) && pipelineMaxRetries == 0 {
 		outputPath := filepath.Join(pipelineOutputDir, fmt.Sprintf("%s_%s_v1.mp4", result.Props.ProjectID, timestamp))
 		if renderErr := executor.Render(cmd.Context(), templatePath, composition, propsPath, outputPath); renderErr != nil {
 			fmt.Fprintf(os.Stderr, "[Warning] render failed: %v\n", renderErr)
@@ -326,7 +377,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if pipelineMaxRetries > 0 {
+	if shouldRenderStatic(videoBackend) && pipelineMaxRetries > 0 {
 		for attempt := 0; attempt <= pipelineMaxRetries; attempt++ {
 			outputPath := filepath.Join(pipelineOutputDir, fmt.Sprintf("%s_%s_v%d.mp4", result.Props.ProjectID, timestamp, attempt+1))
 
@@ -418,8 +469,7 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Stage 2: Dynamic video backend (nova_reel or grok_browser)
-	videoBackend := resolveVideoBackend()
+	// Stage 2: Dynamic video backend.
 	var reelApprovedFlag bool
 	if criticApproved && videoBackend == "nova_reel" && !dryRun {
 		reelVideoPath, reelErr := runNovaReelStage(cmd.Context(), result.Panels, props, cfg, pipelineOutputDir)
@@ -531,45 +581,519 @@ func loadPanelsFromProps(propsPath string) (string, []domain.Panel, error) {
 
 func init() {
 	pipelineCmd.Flags().BoolVar(&pipelineSkipHITL, "skip-hitl", false, "skip all human-in-the-loop checkpoints")
-	pipelineCmd.Flags().BoolVar(&pipelineSkipLLM, "skip-llm", false, "skip LLM generation and reuse existing remotion_props.json")
+	pipelineCmd.Flags().BoolVar(&pipelineSkipLLM, "skip-llm", false,
+		"legacy remotion_props.json reuse mode; not xAI-native, use the same --output-dir for xAI-native resume")
 	pipelineCmd.Flags().StringVar(&pipelineOutputDir, "output-dir", "", "output directory (default: ~/.shand/projects/<project-id>)")
 	pipelineCmd.Flags().StringVar(&pipelineLanguage, "language", "zh-TW", "TTS/dialogue language (zh-TW, en-US, en-GB, ja-JP, ko-KR, cmn-CN)")
-	pipelineCmd.Flags().IntVar(&pipelineMaxRetries, "max-retries", 0, "maximum AI Critic retry attempts; also triggers automatic remotion render after props generation")
-	pipelineCmd.Flags().IntVar(&pipelineEpisodes, "episodes", 1, "number of episodes to produce in batch mode")
+	pipelineCmd.Flags().IntVar(&pipelineMaxRetries, "max-retries", 0,
+		"legacy AI Critic retry attempts; not xAI-native, also triggers automatic remotion render after props generation")
+	pipelineCmd.Flags().IntVar(&pipelineEpisodes, "episodes", 1,
+		"number of episodes to produce; xAI-native writes each episode under episode_###")
 	pipelineCmd.Flags().IntVar(&pipelineBatchConc, "batch-concurrency", 2, "max concurrent workers in batch mode")
-	pipelineCmd.Flags().StringVar(&pipelineFormat, "format", "landscape",
+	pipelineCmd.Flags().StringVar(&pipelineFormat, "format", "portrait",
 		"Output video format: landscape (1024×576) or portrait (576×1024 for TikTok/Reels/Shorts)")
-	pipelineCmd.Flags().BoolVar(&pipelineMultiSpeaker, "multi-speaker", false, "enable per-character voice routing using character registry (requires --language)")
+	pipelineCmd.Flags().BoolVar(&pipelineMultiSpeaker, "multi-speaker", false,
+		"legacy per-character TTS routing; not xAI-native, requires --language")
 	pipelineCmd.Flags().BoolVar(&pipelineSeriesMemory, "series-memory", false,
-		"Enable series continuity across episodes. Requires --episodes > 1.")
+		"legacy series continuity across episodes; not xAI-native, requires --episodes > 1")
 	pipelineCmd.Flags().IntVar(&pipelineSeriesWindow, "series-window", 3,
 		"Number of recent episodes to inject as context. (default: 3)")
 	pipelineCmd.Flags().StringVar(&pipelineVideoBackend, "video-backend", "",
-		"video backend: remotion (default), nova_reel, grok_browser, or hyperframes")
+		"video backend: xai_oauth (default; xai-oauth alias), remotion, nova_reel, grok_browser (deprecated), or hyperframes")
 	pipelineCmd.Flags().StringVar(&pipelineImageDir, "image-dir", "",
 		"use pre-existing images from this directory (sorted by filename); skips image generation API")
 	pipelineCmd.Flags().IntVar(&pipelineTargetPanels, "panels", 0,
-		"target number of panels (0 = auto); used with --i2v to match illustration count")
+		"target number of panels/shots (0 = auto); xAI-native maps this one-to-one as one xAI video shot per panel")
 	pipelineCmd.Flags().BoolVar(&pipelineI2V, "i2v", false,
-		"image-to-video mode: skip cover image, use remaining --image-dir illustrations as I2V references in grok_browser stage")
+		"legacy grok_browser image-to-video mode: skip cover image, use remaining --image-dir illustrations as I2V references")
 	pipelineCmd.Flags().BoolVar(&pipelineFaithful, "faithful", false,
-		"faithful mode: LLM only splits original text into scenes/panels — no invention or embellishment")
+		"legacy faithful mode; not xAI-native: LLM only splits original text into scenes/panels — no invention or embellishment")
 	pipelineCmd.Flags().BoolVar(&pipelineVerbatim, "verbatim", false,
-		"verbatim mode: single-pass LLM segments text only; dialogue is copied character-for-character from input")
+		"legacy verbatim mode; not xAI-native: single-pass LLM segments text only; dialogue is copied character-for-character from input")
 	pipelineCmd.Flags().BoolVar(&pipelineNarration, "narration", false,
-		"narration mode: single-pass LLM rewrites story as narrator voice; all dialogue becomes narration (speaker: '')")
+		"legacy narration mode; not xAI-native: single-pass LLM rewrites story as narrator voice; all dialogue becomes narration (speaker: '')")
+	pipelineCmd.Flags().BoolVar(&pipelineForceReplan, "force-replan", false,
+		"xAI-native only: ignore matching xai_manifest.json and call xAI planning again")
+	pipelineCmd.Flags().BoolVar(&pipelineForceRegenerate, "force-regenerate", false,
+		"xAI-native only: regenerate xAI shot videos even when cached shots are valid")
 	rootCmd.AddCommand(pipelineCmd)
 }
 
-// resolveVideoBackend returns the effective video backend: CLI flag > config > "remotion".
+// resolveVideoBackend returns the effective video backend: CLI flag > config > "xai_oauth".
 func resolveVideoBackend() string {
-	if pipelineVideoBackend != "" {
-		return pipelineVideoBackend
+	if strings.TrimSpace(pipelineVideoBackend) != "" {
+		return normalizeVideoBackend(pipelineVideoBackend)
 	}
-	if cfg != nil && cfg.Video.Provider != "" {
-		return cfg.Video.Provider
+	if cfg != nil && strings.TrimSpace(cfg.Video.Provider) != "" {
+		return normalizeVideoBackend(cfg.Video.Provider)
 	}
-	return "remotion"
+	return "xai_oauth"
+}
+
+func normalizeVideoBackend(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "xai-oauth" {
+		return "xai_oauth"
+	}
+	return provider
+}
+
+func shouldRenderStatic(videoBackend string) bool {
+	return normalizeVideoBackend(videoBackend) != "xai_oauth"
+}
+
+func isSupportedPipelineVideoBackend(backend string) bool {
+	switch normalizeVideoBackend(backend) {
+	case "xai_oauth", "remotion", "nova_reel", "grok_browser", "hyperframes":
+		return true
+	default:
+		return false
+	}
+}
+
+type pipelineVideoModeOptions struct {
+	Backend          string
+	ImageDir         string
+	I2V              bool
+	SkipLLM          bool
+	Episodes         int
+	TargetPanels     int
+	Format           string
+	BatchConcurrency int
+	ForceReplan      bool
+	ForceRegenerate  bool
+	SeriesMemory     bool
+	MultiSpeaker     bool
+	Faithful         bool
+	Verbatim         bool
+	Narration        bool
+	MaxRetries       int
+}
+
+func validatePipelineVideoMode(opts pipelineVideoModeOptions) error {
+	backend := normalizeVideoBackend(opts.Backend)
+	if opts.Episodes <= 0 {
+		return fmt.Errorf("--episodes must be greater than zero")
+	}
+	if opts.TargetPanels < 0 {
+		return fmt.Errorf("--panels must be zero or greater")
+	}
+	if opts.MaxRetries < 0 {
+		return fmt.Errorf("--max-retries must be zero or greater")
+	}
+	if opts.Episodes > 1 && opts.BatchConcurrency <= 0 {
+		return fmt.Errorf("--batch-concurrency must be greater than zero")
+	}
+	if !isSupportedPipelineVideoBackend(backend) {
+		return fmt.Errorf("unsupported --video-backend %q; want xai_oauth, remotion, nova_reel, grok_browser, or hyperframes", backend)
+	}
+	if backend != "xai_oauth" {
+		if opts.ForceReplan {
+			return fmt.Errorf("--force-replan is supported only by xAI-native xai_oauth")
+		}
+		if opts.ForceRegenerate {
+			return fmt.Errorf("--force-regenerate is supported only by xAI-native xai_oauth")
+		}
+	}
+	if backend == "xai_oauth" {
+		format := strings.ToLower(strings.TrimSpace(opts.Format))
+		if format != "" && format != "portrait" {
+			return fmt.Errorf("--format %q is not supported by xAI-native xai_oauth; first stable xAI-native pipeline supports portrait only", format)
+		}
+		if opts.SkipLLM {
+			return fmt.Errorf("--skip-llm is a legacy remotion_props.json reuse mode and is not supported by xAI-native xai_oauth; rerun with the same --output-dir to reuse xai_manifest.json and cached shots")
+		}
+		if opts.SeriesMemory {
+			return fmt.Errorf("--series-memory is a legacy series-continuity mode and is not supported by xAI-native xai_oauth")
+		}
+		if opts.MultiSpeaker {
+			return fmt.Errorf("--multi-speaker is a legacy TTS mode and is not supported by xAI-native xai_oauth")
+		}
+		if opts.Faithful {
+			return fmt.Errorf("--faithful is a legacy story transformation mode and is not supported by xAI-native xai_oauth")
+		}
+		if opts.Verbatim {
+			return fmt.Errorf("--verbatim is a legacy story transformation mode and is not supported by xAI-native xai_oauth")
+		}
+		if opts.Narration {
+			return fmt.Errorf("--narration is a legacy story transformation mode and is not supported by xAI-native xai_oauth")
+		}
+		if opts.MaxRetries > 0 {
+			return fmt.Errorf("--max-retries is a legacy AI Critic rerender mode and is not supported by xAI-native xai_oauth")
+		}
+		if opts.I2V {
+			return fmt.Errorf("--i2v is not supported by xAI-native xai_oauth; omit --i2v to generate xAI video shots through HyperFrames/FFmpeg, or select legacy deprecated --video-backend grok_browser for image-reference I2V")
+		}
+		if strings.TrimSpace(opts.ImageDir) != "" {
+			return fmt.Errorf("--image-dir is a legacy asset input and is not supported by xAI-native xai_oauth; omit --image-dir to generate xAI video shots through HyperFrames/FFmpeg, or select a non-xAI legacy backend")
+		}
+		return nil
+	}
+	if opts.I2V && backend != "grok_browser" {
+		return fmt.Errorf("--i2v requires legacy deprecated --video-backend grok_browser")
+	}
+	return nil
+}
+
+func shouldUseXAINativePipeline(videoBackend string) bool {
+	return normalizeVideoBackend(videoBackend) == "xai_oauth" &&
+		!pipelineSkipLLM &&
+		pipelineEpisodes <= 1 &&
+		strings.TrimSpace(pipelineImageDir) == "" &&
+		!pipelineI2V
+}
+
+func shouldUseXAINativeBatchPipeline(videoBackend string) bool {
+	return normalizeVideoBackend(videoBackend) == "xai_oauth" &&
+		!pipelineSkipLLM &&
+		pipelineEpisodes > 1 &&
+		strings.TrimSpace(pipelineImageDir) == "" &&
+		!pipelineI2V
+}
+
+type xaiNativeRunner interface {
+	Run(ctx context.Context, story []byte, opts xpipe.RunOptions) (*xpipe.Result, error)
+}
+
+var newXAINativePipelineRunner = newDefaultXAINativePipelineRunner
+
+func runXAINativePipeline(ctx context.Context, inputData []byte, appCfg *config.Config) (*xpipe.Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	runner, err := resolveXAINativePipelineRunner(appCfg)
+	if err != nil {
+		return nil, err
+	}
+	format := xaiNativePipelineFormat()
+	videoModel := xaiNativeVideoModel(appCfg)
+	result, err := runner.Run(ctx, inputData, xpipe.RunOptions{
+		OutputDir:       pipelineOutputDir,
+		ShandHome:       defaultShandHome(),
+		TargetShots:     pipelineTargetPanels,
+		Format:          format,
+		VideoModel:      videoModel,
+		ForceReplan:     pipelineForceReplan,
+		ForceRegenerate: pipelineForceRegenerate,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, errors.New("xai-native result is nil")
+	}
+	return result, nil
+}
+
+func runXAINativeBatchPipeline(ctx context.Context, inputData []byte, appCfg *config.Config) (*xpipe.BatchResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	runner, err := resolveXAINativePipelineRunner(appCfg)
+	if err != nil {
+		return nil, err
+	}
+	result, err := xpipe.RunBatch(ctx, runner, inputData, xpipe.BatchOptions{
+		Episodes:    pipelineEpisodes,
+		Concurrency: pipelineBatchConc,
+		RunOptions: xpipe.RunOptions{
+			OutputDir:       xaiNativeBatchOutputRoot(),
+			ShandHome:       defaultShandHome(),
+			TargetShots:     pipelineTargetPanels,
+			Format:          xaiNativePipelineFormat(),
+			VideoModel:      xaiNativeVideoModel(appCfg),
+			ForceReplan:     pipelineForceReplan,
+			ForceRegenerate: pipelineForceRegenerate,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := xaiNativeBatchFailureError(result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func resolveXAINativePipelineRunner(appCfg *config.Config) (xaiNativeRunner, error) {
+	runner, err := newXAINativePipelineRunner(appCfg, dryRun)
+	if err != nil {
+		return nil, err
+	}
+	if runner == nil {
+		return nil, errors.New("xai-native runner is nil")
+	}
+	return runner, nil
+}
+
+func xaiNativePipelineFormat() string {
+	format := strings.ToLower(strings.TrimSpace(pipelineFormat))
+	if format == "" {
+		return "portrait"
+	}
+	return format
+}
+
+func xaiNativeSummary(result *xpipe.Result, videoBackend string, isDryRun bool) map[string]any {
+	summary := map[string]any{
+		"project_id":    result.Manifest.ProjectID,
+		"shots":         len(result.Manifest.Shots),
+		"dry_run":       isDryRun,
+		"output_dir":    result.OutputDir,
+		"output_video":  result.OutputVideo,
+		"xai_manifest":  result.ManifestPath,
+		"pipeline":      "xai_native",
+		"story_hash":    result.Manifest.StoryHash,
+		"video_backend": videoBackend,
+		"video_model":   result.Manifest.VideoModel,
+		"renderer":      "hyperframes_ffmpeg",
+	}
+	if result.RenderMetadataPath != "" {
+		summary["render_metadata"] = result.RenderMetadataPath
+	}
+	if result.RunMetadataPath != "" {
+		summary["run_metadata"] = result.RunMetadataPath
+	}
+	if result.PreviewFramePath != "" {
+		summary["preview_frame"] = result.PreviewFramePath
+	}
+	return summary
+}
+
+func xaiNativeBatchSummary(result *xpipe.BatchResult, videoBackend string, isDryRun bool) map[string]any {
+	summary := map[string]any{
+		"pipeline":       "xai_native_batch",
+		"video_backend":  videoBackend,
+		"renderer":       "hyperframes_ffmpeg",
+		"dry_run":        isDryRun,
+		"output_dir":     result.OutputDir,
+		"total_episodes": result.TotalEpisodes,
+		"succeeded":      result.Succeeded,
+		"failed":         result.Failed,
+		"episodes":       result.Episodes,
+	}
+	if videoModel := xaiNativeBatchVideoModel(result); videoModel != "" {
+		summary["video_model"] = videoModel
+	}
+	if storyHash := xaiNativeBatchStoryHash(result); storyHash != "" {
+		summary["story_hash"] = storyHash
+	}
+	return summary
+}
+
+func xaiNativeBatchStoryHash(result *xpipe.BatchResult) string {
+	if result == nil {
+		return ""
+	}
+	for _, episode := range result.Episodes {
+		if episode.Result == nil {
+			continue
+		}
+		if storyHash := strings.TrimSpace(episode.Result.Manifest.StoryHash); storyHash != "" {
+			return storyHash
+		}
+	}
+	return ""
+}
+
+func xaiNativeBatchVideoModel(result *xpipe.BatchResult) string {
+	if result == nil {
+		return ""
+	}
+	for _, episode := range result.Episodes {
+		if episode.Result == nil {
+			continue
+		}
+		if videoModel := strings.TrimSpace(episode.Result.Manifest.VideoModel); videoModel != "" {
+			return videoModel
+		}
+	}
+	return ""
+}
+
+func xaiNativeBatchFailureError(result *xpipe.BatchResult) error {
+	if result == nil {
+		return errors.New("xai-native batch result is nil")
+	}
+	if result.Failed == 0 {
+		return nil
+	}
+	message := fmt.Sprintf("xAI-native batch failed: %d/%d episodes failed", result.Failed, result.TotalEpisodes)
+	for _, episode := range result.Episodes {
+		if episode.Error != "" {
+			return fmt.Errorf("%s; first failure episode %d: %s", message, episode.Episode, episode.Error)
+		}
+	}
+	return errors.New(message)
+}
+
+func xaiNativeBatchOutputRoot() string {
+	if strings.TrimSpace(pipelineOutputDir) != "" {
+		return pipelineOutputDir
+	}
+	return filepath.Join(defaultShandHome(), "projects", "xai_batch_"+time.Now().Format("20060102_150405"))
+}
+
+func defaultShandHome() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".shand")
+}
+
+func newDefaultXAINativePipelineRunner(appCfg *config.Config, isDryRun bool) (xaiNativeRunner, error) {
+	plannerCfg := xaiNativePlannerConfig(appCfg)
+	llmClient, err := llm.NewClient("xai-oauth", isDryRun, plannerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create xai planner llm: %w", err)
+	}
+
+	var shotGenerator xpipe.ShotResultGenerator
+	if isDryRun {
+		shotGenerator = xpipe.NewDryRunShotGenerator()
+	} else {
+		baseURL := ""
+		tokenPath := ""
+		model := xaiNativeVideoModel(appCfg)
+		if appCfg != nil {
+			baseURL = appCfg.XAI.BaseURL
+			tokenPath = appCfg.XAI.TokenPath
+		}
+		store := xauth.NewFileTokenStore(tokenPath)
+		videoClient := video.NewXAIOAuthClient(baseURL, model, xauth.NewFileTokenSource(store), nil)
+		shotGenerator = xpipe.NewVideoShotGenerator(xaiOAuthVideoAdapter{client: videoClient})
+	}
+
+	var finalizer xpipe.VideoFinalizer
+	if isDryRun {
+		finalizer = xpipe.DryRunFinalizer{}
+	}
+	renderer := xpipe.NewHyperFramesFFmpegRenderer(hyperframes.NewCLIExecutor(isDryRun), finalizer)
+	if isDryRun {
+		renderer = renderer.
+			WithShotNormalizer(xpipe.DryRunShotNormalizer{}).
+			WithOutputValidator(xpipe.DryRunOutputValidator{}).
+			WithPreviewExtractor(xpipe.DryRunPreviewExtractor{})
+	} else {
+		renderer = renderer.
+			WithShotNormalizer(xpipe.NewFFmpegShotNormalizer()).
+			WithOutputValidator(xpipe.NewFFprobeOutputValidator()).
+			WithPreviewExtractor(xpipe.NewFFmpegPreviewExtractor())
+	}
+
+	var shotValidator xpipe.ShotValidator
+	if isDryRun {
+		shotValidator = xpipe.DryRunShotValidator{}
+	} else {
+		shotValidator = xpipe.NewFFprobeShotValidator()
+	}
+
+	return xpipe.NewOrchestrator(xpipe.Deps{
+		Planner:       xpipe.NewLLMPlanner(llmClient),
+		ShotGenerator: shotGenerator,
+		Renderer:      renderer,
+		Validator:     shotValidator,
+	}), nil
+}
+
+func xaiNativePlannerConfig(appCfg *config.Config) *config.Config {
+	if appCfg == nil {
+		return &config.Config{
+			LLM: config.LLMConfig{Provider: "xai-oauth"},
+			XAI: config.XAIConfig{
+				Model:   "grok-4.3",
+				BaseURL: "https://api.x.ai/v1",
+			},
+		}
+	}
+
+	plannerCfg := *appCfg
+	plannerCfg.LLM.Provider = "xai-oauth"
+	plannerCfg.LLM.Model = ""
+	plannerCfg.LLM.BaseURL = ""
+	plannerCfg.XAI.TokenPath = appCfg.XAI.TokenPath
+	plannerCfg.XAI.Model = strings.TrimSpace(plannerCfg.XAI.Model)
+	plannerCfg.XAI.BaseURL = strings.TrimSpace(plannerCfg.XAI.BaseURL)
+	if plannerCfg.XAI.Model == "" {
+		plannerCfg.XAI.Model = "grok-4.3"
+	}
+	if plannerCfg.XAI.BaseURL == "" {
+		plannerCfg.XAI.BaseURL = "https://api.x.ai/v1"
+	}
+	return &plannerCfg
+}
+
+func xaiNativeVideoModel(appCfg *config.Config) string {
+	const defaultModel = "grok-imagine-video"
+	if appCfg == nil {
+		return defaultModel
+	}
+	model := strings.TrimSpace(appCfg.Video.Model)
+	if normalizeVideoBackend(appCfg.Video.Provider) == "xai_oauth" && model != "" {
+		return model
+	}
+	return defaultModel
+}
+
+type xaiOAuthVideoOptionsClient interface {
+	GenerateVideoWithOptions(ctx context.Context, imageURL string, prompt string, options video.GenerateVideoOptions) ([]byte, error)
+}
+
+type xaiOAuthVideoResultClient interface {
+	GenerateVideoWithOptionsResult(ctx context.Context, imageURL string, prompt string, options video.GenerateVideoOptions) (video.GenerateVideoResult, error)
+}
+
+type xaiOAuthVideoClient interface {
+	xaiOAuthVideoOptionsClient
+	xaiOAuthVideoResultClient
+}
+
+type xaiOAuthVideoAdapter struct {
+	client xaiOAuthVideoClient
+}
+
+func (a xaiOAuthVideoAdapter) GenerateVideo(ctx context.Context, imageURL string, prompt string, options xpipe.VideoOptions) ([]byte, error) {
+	if a.client == nil {
+		return nil, fmt.Errorf("xai oauth video adapter client is nil")
+	}
+	data, err := a.client.GenerateVideoWithOptions(ctx, imageURL, prompt, video.GenerateVideoOptions{
+		DurationSec: options.DurationSec,
+		AspectRatio: options.AspectRatio,
+		Resolution:  options.Resolution,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("xai oauth video adapter returned empty video data")
+	}
+	return data, nil
+}
+
+func (a xaiOAuthVideoAdapter) GenerateVideoResult(ctx context.Context, imageURL string, prompt string, options xpipe.VideoOptions) (xpipe.VideoGenerationResult, error) {
+	if a.client == nil {
+		return xpipe.VideoGenerationResult{}, fmt.Errorf("xai oauth video adapter client is nil")
+	}
+	result, err := a.client.GenerateVideoWithOptionsResult(ctx, imageURL, prompt, video.GenerateVideoOptions{
+		DurationSec: options.DurationSec,
+		AspectRatio: options.AspectRatio,
+		Resolution:  options.Resolution,
+	})
+	if err != nil {
+		return xpipe.VideoGenerationResult{}, err
+	}
+	if len(result.Data) == 0 {
+		return xpipe.VideoGenerationResult{}, fmt.Errorf("xai oauth video adapter returned empty video data")
+	}
+	return xpipe.VideoGenerationResult{
+		Data:      result.Data,
+		RequestID: result.RequestID,
+		Status:    result.Status,
+	}, nil
 }
 
 // runNovaReelStage generates a 6-second dynamic shot for each panel via Nova Reel I2V,
@@ -714,7 +1238,7 @@ func runGrokBrowserStage(ctx context.Context, panels []domain.Panel, props domai
 				"last_error": panelErr.Error(),
 				"prompt":     prompt,
 				"timestamp":  time.Now().Format(time.RFC3339),
-				"logs":        attemptLogs,
+				"logs":       attemptLogs,
 			}
 			if logBytes, jsonErr := json.MarshalIndent(errLog, "", "  "); jsonErr == nil {
 				_ = os.WriteFile(logPath, logBytes, 0644)

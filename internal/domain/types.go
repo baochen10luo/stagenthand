@@ -149,42 +149,49 @@ type Scene struct {
 
 // DialogueLine represents a single spoken line by one character.
 type DialogueLine struct {
-	Speaker  string  `json:"speaker"`            // character name; "" = narrator
+	Speaker  string  `json:"speaker"` // character name; "" = narrator
 	Text     string  `json:"text"`
-	Emotion  string  `json:"emotion,omitempty"`  // happy | sad | angry | whisper | neutral
+	Emotion  string  `json:"emotion,omitempty"`   // happy | sad | angry | whisper | neutral
 	StartSec float64 `json:"start_sec,omitempty"` // subtitle display start (seconds into panel)
 	EndSec   float64 `json:"end_sec,omitempty"`   // subtitle display end (seconds into panel)
 }
 
 // Panel represents a single image frame with associated metadata.
 type Panel struct {
-	SceneNumber   int              `json:"scene_number"`
-	PanelNumber   int              `json:"panel_number"`
-	Description   string           `json:"description"`         // image generation prompt
-	Dialogue      string           `json:"dialogue"`            // subtitle text (backward compat)
-	CharacterRefs []string         `json:"character_refs"`           // paths to character reference images
-	Characters    []string         `json:"characters,omitempty"`     // character name list (for registry lookup)
-	ImageURL      string           `json:"image_url,omitempty"` // populated after generation
-	AudioURL      string           `json:"audio_url,omitempty"` // populated after TTS generation
-	DurationSec   float64          `json:"duration_sec"`        // display duration in Remotion
-	Directive     *PanelDirective  `json:"directive,omitempty"` // per-panel rendering directives
-	DialogueLines []DialogueLine   `json:"dialogue_lines,omitempty"` // NEW: structured per-speaker lines
+	SceneNumber   int             `json:"scene_number"`
+	PanelNumber   int             `json:"panel_number"`
+	Description   string          `json:"description"`              // image generation prompt
+	Dialogue      string          `json:"dialogue"`                 // subtitle text (backward compat)
+	CharacterRefs []string        `json:"character_refs"`           // paths to character reference images
+	Characters    []string        `json:"characters,omitempty"`     // character name list (for registry lookup)
+	ImageURL      string          `json:"image_url,omitempty"`      // populated after generation
+	AudioURL      string          `json:"audio_url,omitempty"`      // populated after TTS generation
+	DurationSec   float64         `json:"duration_sec"`             // display duration in Remotion
+	Directive     *PanelDirective `json:"directive,omitempty"`      // per-panel rendering directives
+	DialogueLines []DialogueLine  `json:"dialogue_lines,omitempty"` // NEW: structured per-speaker lines
 }
 
 // PanelDirective holds per-panel rendering instructions for the Remotion template.
 // All fields are optional — missing fields use Remotion's built-in defaults.
 type PanelDirective struct {
 	// Camera motion
-	MotionEffect       string  `json:"motion_effect,omitempty"`         // ken_burns_in|ken_burns_out|pan_left|pan_right|static
-	MotionIntensity    float64 `json:"motion_intensity,omitempty"`      // 0.0–0.2, default 0.05
+	MotionEffect    string  `json:"motion_effect,omitempty"`    // ken_burns_in|ken_burns_out|pan_left|pan_right|static
+	MotionIntensity float64 `json:"motion_intensity,omitempty"` // 0.0–0.2, default 0.05
 	// Transitions
-	TransitionIn       string  `json:"transition_in,omitempty"`         // fade|cut|dissolve|wipe_left
-	TransitionOut      string  `json:"transition_out,omitempty"`
-	TransitionDurationMs int   `json:"transition_duration_ms,omitempty"` // default 300
+	TransitionIn         string `json:"transition_in,omitempty"` // fade|cut|dissolve|wipe_left
+	TransitionOut        string `json:"transition_out,omitempty"`
+	TransitionDurationMs int    `json:"transition_duration_ms,omitempty"` // default 300
 	// Subtitles
-	SubtitleEffect     string  `json:"subtitle_effect,omitempty"`       // fade|typewriter|none
-	SubtitleFontSize   int     `json:"subtitle_font_size,omitempty"`    // default 36
-	SubtitlePosition   string  `json:"subtitle_position,omitempty"`     // bottom|top|center
+	SubtitleEffect   string `json:"subtitle_effect,omitempty"`    // fade|typewriter|none
+	SubtitleFontSize int    `json:"subtitle_font_size,omitempty"` // default 36
+	SubtitlePosition string `json:"subtitle_position,omitempty"`  // bottom|top|center
+	// Extended visual design fields
+	BgStyle       string  `json:"bg_style,omitempty"` // card|fullbleed|title|blur|gradient
+	TextX         string  `json:"text_x,omitempty"`   // left|center|right
+	TextY         string  `json:"text_y,omitempty"`   // top|middle|bottom
+	TextRotate    float64 `json:"text_rotate,omitempty"`
+	ShowParticles bool    `json:"show_particles,omitempty"`
+	ShowLightLeak bool    `json:"show_light_leak,omitempty"`
 }
 
 // HasCharacterRefs returns true if any character reference images are specified.
@@ -218,17 +225,17 @@ type Checkpoint struct {
 // All fields are optional — missing fields use Remotion's built-in defaults.
 type Directives struct {
 	// Audio mastering
-	BGMFadeInSec   float64 `json:"bgm_fade_in_sec,omitempty"`   // music fade-in duration
-	BGMFadeOutSec  float64 `json:"bgm_fade_out_sec,omitempty"`  // music fade-out duration
-	BGMVolume      float64 `json:"bgm_volume,omitempty"`        // base volume 0.0–1.0
-	DuckingDepth   float64 `json:"ducking_depth,omitempty"`     // BGM volume during voiceover
-	DuckingFadeSec float64 `json:"ducking_fade_sec,omitempty"`  // ducking ramp duration
-	BGMTags        string  `json:"bgm_tags,omitempty"`        // + separated tags for Jamendo
+	BGMFadeInSec   float64 `json:"bgm_fade_in_sec,omitempty"`  // music fade-in duration
+	BGMFadeOutSec  float64 `json:"bgm_fade_out_sec,omitempty"` // music fade-out duration
+	BGMVolume      float64 `json:"bgm_volume,omitempty"`       // base volume 0.0–1.0
+	DuckingDepth   float64 `json:"ducking_depth,omitempty"`    // BGM volume during voiceover
+	DuckingFadeSec float64 `json:"ducking_fade_sec,omitempty"` // ducking ramp duration
+	BGMTags        string  `json:"bgm_tags,omitempty"`         // + separated tags for Jamendo
 	// Visual
 	ColorFilter string `json:"color_filter,omitempty"` // none|cinematic|vintage|cyberpunk
 	StylePrompt string `json:"style_prompt,omitempty"` // globally prepended prompt text
 	// Scene transitions
-	SceneTransitionIn         string `json:"scene_transition_in,omitempty"`         // "crossfade" | "fade" | "cut"
+	SceneTransitionIn         string `json:"scene_transition_in,omitempty"`          // "crossfade" | "fade" | "cut"
 	SceneTransitionDurationMs int    `json:"scene_transition_duration_ms,omitempty"` // default 0 (disabled)
 	// Language
 	Language string `json:"language,omitempty"` // BCP-47 language tag, e.g. "zh-TW", "en-US"

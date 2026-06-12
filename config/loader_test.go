@@ -14,23 +14,50 @@ func TestLoad_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Image.Provider != "nanobanana" {
-		t.Errorf("Image.Provider = %q, want %q", cfg.Image.Provider, "nanobanana")
+	if cfg.LLM.Provider != "xai-oauth" {
+		t.Errorf("LLM.Provider = %q, want xai-oauth", cfg.LLM.Provider)
 	}
-	if cfg.Image.Width != 1024 {
-		t.Errorf("Image.Width = %d, want 1024", cfg.Image.Width)
+	if cfg.LLM.Model != "grok-4.3" {
+		t.Errorf("LLM.Model = %q, want grok-4.3", cfg.LLM.Model)
 	}
-	if cfg.Image.Region != "us-west-2" {
-		t.Errorf("Image.Region = %q, want %q", cfg.Image.Region, "us-west-2")
+	if cfg.Image.Provider != "mock" {
+		t.Errorf("Image.Provider = %q, want %q", cfg.Image.Provider, "mock")
 	}
-	if cfg.Image.Model != "amazon.titan-image-generator-v2:0" {
-		t.Errorf("Image.Model = %q, want %q", cfg.Image.Model, "amazon.titan-image-generator-v2:0")
+	if cfg.Image.Width != 576 {
+		t.Errorf("Image.Width = %d, want 576", cfg.Image.Width)
+	}
+	if cfg.Image.Height != 1024 {
+		t.Errorf("Image.Height = %d, want 1024", cfg.Image.Height)
 	}
 	if cfg.Server.Port != 28080 {
 		t.Errorf("Server.Port = %d, want 28080", cfg.Server.Port)
 	}
 	if cfg.Store.DBPath == "" {
 		t.Error("Store.DBPath must not be empty")
+	}
+	if cfg.XAI.Model != "grok-4.3" {
+		t.Errorf("XAI.Model = %q, want grok-4.3", cfg.XAI.Model)
+	}
+	if cfg.XAI.BaseURL != "https://api.x.ai/v1" {
+		t.Errorf("XAI.BaseURL = %q, want https://api.x.ai/v1", cfg.XAI.BaseURL)
+	}
+	if cfg.XAI.TokenPath != "~/.hermes/auth.json" {
+		t.Errorf("XAI.TokenPath = %q, want ~/.hermes/auth.json", cfg.XAI.TokenPath)
+	}
+	if cfg.Video.Model != "grok-imagine-video" {
+		t.Errorf("Video.Model = %q, want grok-imagine-video", cfg.Video.Model)
+	}
+	if cfg.Video.Provider != "xai_oauth" {
+		t.Errorf("Video.Provider = %q, want xai_oauth", cfg.Video.Provider)
+	}
+	if !cfg.Video.Enabled {
+		t.Error("Video.Enabled = false, want true")
+	}
+	if cfg.Audio.VoiceProvider != "mock" {
+		t.Errorf("Audio.VoiceProvider = %q, want mock", cfg.Audio.VoiceProvider)
+	}
+	if cfg.Audio.MusicProvider != "mock" {
+		t.Errorf("Audio.MusicProvider = %q, want mock", cfg.Audio.MusicProvider)
 	}
 }
 
@@ -49,7 +76,7 @@ func TestLoad_OverrideFromFile(t *testing.T) {
 		t.Errorf("Image.Width = %d, want 512", cfg.Image.Width)
 	}
 	// Non-overridden fields keep defaults.
-	if cfg.Image.Provider != "nanobanana" {
-		t.Errorf("Image.Provider = %q, want %q", cfg.Image.Provider, "nanobanana")
+	if cfg.Image.Provider != "mock" {
+		t.Errorf("Image.Provider = %q, want %q", cfg.Image.Provider, "mock")
 	}
 }

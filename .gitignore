@@ -17,6 +17,8 @@ config.local.yaml
 # Runtime
 props.json
 output/
+outputs/
+project/
 *.mp4
 
 # Go

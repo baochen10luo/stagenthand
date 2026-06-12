@@ -70,7 +70,7 @@ func TestOpenAICompatibleClient_GenerateTransformation(t *testing.T) {
 	})
 
 	t.Run("http connection failure", func(t *testing.T) {
-		client := llm.NewOpenAICompatibleClient("http://127.0.0.1:0", "test-key", "model")
+		client := llm.NewOpenAICompatibleClientWithOptions("http://127.0.0.1:0", "test-key", "model", llm.ClientOptions{RetryMax: -1})
 		_, err := client.GenerateTransformation(context.Background(), "", nil)
 		assert.ErrorContains(t, err, "http request failed")
 	})
