@@ -1,0 +1,4 @@
+interface:
+  display_name: "xAI Static Voice Video"
+  short_description: "Create xAI OAuth voiced static HyperFrames videos."
+  default_prompt: "Create a voiced static HyperFrames video with xAI OAuth voice, FFmpeg finalization, and validation."
