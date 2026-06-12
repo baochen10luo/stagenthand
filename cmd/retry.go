@@ -28,7 +28,7 @@ var retryCmd = &cobra.Command{
 	Short: "Retry failed I2V shots",
 	Long: `Retry specific failed panels from a previous pipeline run.
 
-Requires the grok_browser stage to have run first (pipeline --video-backend grok_browser --i2v).
+Requires the legacy deprecated grok_browser stage to have run first (pipeline --video-backend grok_browser --i2v).
 This command marks specified panels for retry and provides the command to regenerate them.
 
 Examples:
@@ -120,7 +120,7 @@ func runRetry(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nRetry marked: %d panels ready for regeneration\n", successCount)
-	fmt.Printf("Run: shand pipeline --skip-llm -o %s --image-dir <images> --panels <n> --i2v\n", retryOutputDir)
+	fmt.Printf("Run: shand pipeline --skip-llm --video-backend grok_browser --output-dir %s --image-dir <images> --panels <n> --i2v\n", retryOutputDir)
 	return nil
 }
 

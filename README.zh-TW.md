@@ -15,25 +15,14 @@
 
 ```
 Story Prompt
-  ↓ story-to-outline       (LLM)
-Outline JSON
-  ↓ outline-to-storyboard  (LLM)
-Storyboard JSON
-  ↓ storyboard-to-panels   (LLM)
-Panel[] JSON
-  ↓ panels-to-images       (Nano Banana 2 / Nova Canvas, concurrent)
-Panel[] + image_url
-  ↓ TTS                    (Amazon Polly Neural + SSML)
-Panel[] + audio_url
-  ↓ BGM                    (Jamendo API)
-  ↓ storyboard-to-remotion-props
-RemotionProps JSON
-  ↓ remotion-render        (npx remotion)
+  ↓ xAI OAuth shot plan    (LLM)
+xAI Manifest
+  ↓ xAI OAuth video shots  (grok-imagine-video)
+Shot MP4s
+  ↓ HyperFrames timeline
+Timeline MP4
+  ↓ FFmpeg finalization
 output.mp4
-  ↓ critic                 (Amazon Nova Pro, multimodal)
-APPROVE / REJECT
-  ↓ postprod loop          (可選：自動修正 → 重渲染直到通過)
-Converged mp4
 ```
 
 ---
@@ -50,7 +39,8 @@ Converged mp4
 
 | 提供商 | 設定值 | 備注 |
 |---|---|---|
-| 本地 / 自架（Qwen3、vLLM、LM Studio） | `llm.provider: openai` | 預設；設定 `base_url` 指向端點 |
+| xAI Grok OAuth | `llm.provider: xai-oauth` | 預設；沿用 Hermes OAuth 憑證 `~/.hermes/auth.json`；不需要 `XAI_API_KEY` |
+| 本地 / 自架（Qwen3、vLLM、LM Studio） | `llm.provider: openai` | 設定 `base_url` 指向端點 |
 | OpenAI | `llm.provider: openai` | 設定 `api_key` |
 | Google Gemini | `llm.provider: gemini` | 設定 `api_key` |
 | Anthropic Claude | `llm.provider: anthropic` | 設定 `api_key` 或 `ANTHROPIC_API_KEY` |
@@ -58,7 +48,9 @@ Converged mp4
 
 ### 圖像生成
 
-透過 `image.provider` 可熱切換；回傳格式（PNG / JPEG / WebP）由 magic bytes 自動偵測，不強制格式。
+預設 xAI OAuth video pipeline 會跳過靜態圖像生成。Remotion / Nova / 舊流程仍可透過 `image.provider` 熱切換；回傳格式（PNG / JPEG / WebP）由 magic bytes 自動偵測。
+
+獨立 xAI-native pipeline 重寫規劃記錄在 [`docs/xai-native-pipeline-plan.md`](docs/xai-native-pipeline-plan.md)。
 
 | 提供商 | 設定值 | 備注 |
 |---|---|---|
@@ -70,22 +62,22 @@ Converged mp4
 
 ### 語音合成
 
-TTS provider 透過 `audio.voice_provider` 熱切換。
+預設 xAI OAuth video pipeline 會跳過 TTS。Remotion / rough-cut 流程仍可透過 `audio.voice_provider` 熱切換。
 
 | 提供商 | 設定值 | 備注 |
 |---|---|---|
-| Amazon Polly Neural | `voice_provider: polly` | 預設；多語言、SSML |
+| Amazon Polly Neural | `voice_provider: polly` | 多語言、SSML |
 | aiark TTS (Qwen3-TTS) | `voice_provider: aiark` | 自架；設定 `aiark_tts_base_url` |
 
 多語者模式（`--multi-speaker`）根據角色登錄為每條 `DialogueLine` 路由不同聲線。
 
 ### 背景音樂
 
-BGM provider 透過 `audio.music_provider` 熱切換。
+預設 xAI OAuth video pipeline 會跳過 BGM。Remotion / rough-cut 流程仍可透過 `audio.music_provider` 熱切換。
 
 | 提供商 | 設定值 |
 |---|---|
-| Jamendo | `music_provider: jamendo`（預設） |
+| Jamendo | `music_provider: jamendo` |
 | aiark Music (ACE-Step) | `music_provider: aiark` |
 
 ### AI 評審
@@ -152,7 +144,7 @@ Amazon Polly Neural 支援多語言。使用 `--language` 選擇語音語系，�
 
 ### 批量製作
 
-使用 `--episodes N` 從同一個故事描述一次生成多集，並發數上限由 `--batch-concurrency` 控制（預設 2）。每集有獨立的專案目錄與 job ID。
+使用 `--episodes N` 從同一個故事描述一次生成多集。在 xAI-native 路徑中，並發數上限由 `--batch-concurrency` 控制（預設 2），每集會寫入 batch 輸出目錄底下的 `episode_###` 子目錄。
 
 ### Agentic 後製
 
@@ -224,6 +216,78 @@ go build -o shand .
 echo "機器人找到了一朵會發光的花" | ./shand pipeline --skip-hitl
 ```
 
+### xAI-native 生產測試流程
+
+預設生產路徑使用 xAI OAuth 做 planning 與 video generation，再用 HyperFrames 搭配 FFmpeg 做可重現渲染。在這條路徑中，xAI 是唯一模型層；HyperFrames 是 timeline renderer；FFmpeg/ffprobe 負責正規化、靜音 finalization、preview extraction 與 validation。先透過 Hermes 完成登入：
+
+```bash
+hermes auth add xai-oauth
+./shand auth xai status
+```
+
+建議明確指定輸出目錄，讓 resume 與 inspect 都可預期：
+
+```bash
+OUT=outputs/glowing-flower
+
+echo "機器人找到了一朵會發光的花" \
+  | ./shand pipeline --skip-hitl --panels 3 --output-dir "$OUT"
+
+./shand xai inspect "$OUT" \
+  | jq '{status, project_id, shots, missing_artifacts, issues, output_video: .artifacts.output_video}'
+
+./shand xai inspect --strict "$OUT" > "$OUT/inspect.json"
+./shand xai validate "$OUT" > "$OUT/validation.json"
+```
+
+同一個故事與同一個輸出目錄再次執行時，會嘗試沿用匹配的 `xai_manifest.json` 與有效 cached shots：
+
+```bash
+echo "機器人找到了一朵會發光的花" \
+  | ./shand pipeline --skip-hitl --panels 3 --output-dir "$OUT"
+```
+
+只有在確定要重新花 xAI 呼叫成本時才使用 force flags：
+
+```bash
+# 重新用 xAI 規劃；未變更且有效的 shot videos 仍可重用。
+echo "機器人找到了一朵會發光的花" \
+  | ./shand pipeline --skip-hitl --panels 3 --output-dir "$OUT" --force-replan
+
+# 保留匹配的 story manifest，但重新生成 xAI shot videos。
+# 切換 video.model 會更新 video_model/prompt_hash，不會重新 planning。
+echo "機器人找到了一朵會發光的花" \
+  | ./shand pipeline --skip-hitl --panels 3 --output-dir "$OUT" --force-regenerate
+```
+
+xAI-native 預期產物包含 `xai_manifest.json`、`xai_run_metadata.json`、`shots/shot_NNN.mp4`、`normalized/shot_NNN.mp4`、`render_metadata.json`、`preview_frame.jpg` 與最終 `output_xai.mp4`。
+
+`xai validate` 比 `xai inspect --strict` 更嚴格：它還會執行 FFmpeg/ffprobe 驗證，並要求每個 shot 都有真實生產生成留下的 xAI request/status metadata。兩個指令都可以檢查單一 xAI-native 輸出目錄，或包含 `episode_###` 的 batch root。
+
+可用 no-network smoke 驗證 dry-run 生成路徑與 strict inspect 契約：
+
+```bash
+scripts/smoke-xai-native-dry-run.sh
+
+# 保留 smoke 產物以便除錯。
+KEEP_SMOKE_OUTPUTS=1 scripts/smoke-xai-native-dry-run.sh
+```
+
+可選 live validation gate 可以驗證既有產物，或在明確開啟時產生 fresh live output。既有產物驗證是本地檢查，不需要 Hermes auth；fresh generation 仍需要 Hermes xAI OAuth 憑證：
+
+```bash
+# 驗證既有 xAI-native 輸出目錄，不會產生新的 xAI 呼叫。
+OUT_DIR=outputs/glowing-flower scripts/validate-xai-native-live.sh
+
+# 產生 fresh live output，然後 inspect 與 validate。
+RUN_XAI_LIVE_VALIDATION=1 OUT_DIR=outputs/live-check PANELS=3 scripts/validate-xai-native-live.sh
+
+# 產生並驗證 fresh batch output。live gate 的 batch concurrency 預設是 1。
+RUN_XAI_LIVE_VALIDATION=1 OUT_DIR=outputs/live-batch PANELS=1 EPISODES=2 BATCH_CONCURRENCY=1 scripts/validate-xai-native-live.sh
+```
+
+GitHub Actions 也有手動觸發的 `xAI Native Live Validation` workflow。把 `~/.hermes/auth.json` 做 base64 後存成 repository secret `HERMES_AUTH_JSON_B64`；如果 secret 不存在，workflow 會 skip，不會花 xAI 呼叫。
+
 ### 從現有 panels 恢復
 
 ```bash
@@ -258,25 +322,30 @@ aws:
   region: us-east-1
 
 llm:
-  provider: openai           # openai | gemini | anthropic | bedrock
-  model: ""                  # 空值 = provider 預設（gpt-4o / gemini-2.5-pro 等）
+  provider: xai-oauth        # xai-oauth | openai | gemini | anthropic | bedrock
+  model: grok-4.3
   api_key: ""
   base_url: ""               # 任何 OpenAI-compatible 端點；空值 = 官方 API
   no_json_mode: false        # 不支援 response_format:json 的伺服器請設 true
   strip_think_tags: false    # 推理模型（Qwen3、QwQ）輸出 <think> 時請設 true
 
+xai_oauth:
+  model: grok-4.3
+  base_url: https://api.x.ai/v1
+  token_path: ~/.hermes/auth.json
+
 image:
-  provider: nanobanana        # nanobanana | aiark | bedrock | stability
+  provider: mock              # 預設 xAI video flow 跳過靜態圖像
   api_key: ""
   base_url: ""               # aiark 自架端點
   model: ""                  # bedrock 用：amazon.nova-canvas-* 或 amazon.titan-image-*
-  width: 1024
-  height: 576
+  width: 576
+  height: 1024
   region: ""                 # 圖像專用 region 覆寫（預設使用 aws.region）
 
 audio:
-  voice_provider: polly       # polly | aiark
-  music_provider: jamendo     # jamendo | aiark
+  voice_provider: mock        # 預設 xAI video flow 跳過 TTS
+  music_provider: mock        # 預設 xAI video flow 跳過 BGM
   jamendo_client_id: ""
   # aiark TTS（自架 Qwen3-TTS）：
   # aiark_tts_base_url: ""
@@ -284,11 +353,12 @@ audio:
   # aiark_tts_voice: ""
 
 critic:
-  provider: bedrock           # bedrock（預設）；未來：anthropic、gemini
+  provider: bedrock           # 可選；目前支援 bedrock
   model: ""                   # 空值 = amazon.nova-pro-v1:0
 
 video:
-  provider: remotion          # remotion | nova_reel | grok_browser | hyperframes
+  provider: xai_oauth         # xai_oauth（或 xai-oauth alias）| remotion | nova_reel | grok_browser (deprecated) | hyperframes
+  model: grok-imagine-video   # xai_oauth 使用
   s3_bucket: ""               # nova_reel 必填
   region: ""                  # 影片專用 region 覆寫
 
@@ -329,6 +399,8 @@ server:
 | `shand checkpoint reject <id>` | 拒絕檢查點 |
 | `shand checkpoint wait <id>` | 輪詢直到檢查點完成 |
 | `shand status <job-id>` | 查詢任務狀態 |
+| `shand xai inspect <output-dir>` | 以 JSON 摘要 xAI-native 產物 |
+| `shand xai validate <output-dir>` | 用 inspect、ffprobe、request metadata 驗證 xAI-native 生產輸出 |
 | `shand character list` | 列出所有已注冊角色 |
 | `shand character show <name>` | 顯示角色參考圖資訊 |
 | `shand character generate <name>` | 生成並注冊角色立繪 |
@@ -344,21 +416,28 @@ server:
 |---|---|---|
 | `--dry-run` | 所有指令 | 跳過外部 API 呼叫，回傳模擬 JSON |
 | `--skip-hitl` | `pipeline` | 停用全部 4 個 HITL 暫停點 |
+| `--output-dir <path>` | `pipeline` | xAI-native 輸出目錄；使用同一路徑可 resume |
 | `--output <path>` | `remotion-render` | 輸出 MP4 路徑 |
 | `--video <path>` | `critic` | 渲染後 MP4 的路徑 |
 | `--props <path>` | `critic` | `remotion_props.json` 的路徑 |
 | `--config <path>` | 所有指令 | 覆寫預設 config 檔路徑 |
 | `--language` | `pipeline` | TTS 語言代碼（預設 zh-TW） |
 | `--max-retries` | `pipeline` | AI 評審自動重試次數（預設 0） |
-| `--episodes N` | `pipeline` | 批量生成 N 集 |
+| `--episodes N` | `pipeline` | xAI-native batch；每集寫入 `episode_###` 子目錄 |
 | `--batch-concurrency` | `pipeline` | 最大並發集數（預設 2） |
 | `--max-iterations` | `postprod loop` | 後製循環最大次數（預設 3） |
 | `--faithful` | `pipeline` | LLM 僅拆分原文，不進行創作 |
 | `--verbatim` | `pipeline` | 單次 LLM：逐字切割，跳過 outline/storyboard |
 | `--narration` | `pipeline` | 單次 LLM：改寫為旁白語氣，所有 speaker 設為空值 |
 | `--multi-speaker` | `pipeline` | 依角色 Registry 路由不同聲線 |
-| `--format portrait` | `pipeline` | 垂直 9:16 影片（TikTok / Reels / Shorts） |
-| `--video-backend` | `pipeline` | 影片渲染後端：remotion \| nova_reel \| grok_browser \| hyperframes |
+| `--format portrait` | `pipeline` | 垂直 9:16 影片（TikTok / Reels / Shorts）；預設 |
+| `--panels N` | `pipeline` | xAI-native 會將 N 個 panels 一對一映射為 N 支 xAI video shots |
+| `--force-replan` | `pipeline` | xAI-native：忽略匹配 manifest，重新呼叫 xAI planning |
+| `--force-regenerate` | `pipeline` | xAI-native：即使 cached shots 有效也重新生成 shot videos |
+| `--video-backend` | `pipeline` | 影片渲染後端：xai_oauth / xai-oauth \| remotion \| nova_reel \| grok_browser (deprecated) \| hyperframes |
+| `--skip-llm` | `pipeline` | 舊版 `remotion_props.json` 重用；`xai_oauth` 會拒絕，xAI-native resume 請使用同一個 `--output-dir` |
+| `--image-dir`, `--i2v` | `pipeline` | 舊版 asset/I2V 輸入；`xai_oauth` 會拒絕，需明確指定非 xAI legacy backend |
+| `--strict` | `xai inspect` | 除非 xAI-native 輸出完整，否則 exit non-zero |
 
 ---
 
@@ -370,7 +449,7 @@ server:
 cmd/                   Thin layer: IO + dependency injection
 internal/
   domain/              Pure data structs, zero external dependencies
-  llm/                 Client interface + factory（openai-compat / bedrock / anthropic / mock）
+  llm/                 Client interface + factory（openai-compat / bedrock / anthropic / xai-oauth / mock）
                        VideoCriticClient interface + NewVideoCriticClient factory
   image/               Client interface + factory（aiark / nanobanana / bedrock / stability / mock）
   audio/               Client interface + factory（polly / aiark-tts / mock）

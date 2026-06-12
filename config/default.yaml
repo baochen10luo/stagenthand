@@ -1,25 +1,30 @@
 llm:
-  provider: openai-compat
-  model: aiark/qwen36-35b-a3b
+  provider: xai-oauth
+  model: grok-4.3
   api_key: ""
   base_url: ""
 
+xai_oauth:
+  model: grok-4.3
+  base_url: https://api.x.ai/v1
+  token_path: ~/.hermes/auth.json
+
 image:
-  provider: aiark
-  model: aiark/ernie-image-turbo
+  provider: mock
+  model: ""
   api_key: ""
-  base_url: https://aiark.com.tw/image
+  base_url: ""
   width: 576
   height: 1024
 
 audio:
-  voice_provider: aiark
-  music_provider: jamendo
-  aiark_tts_base_url: https://aiark.com.tw/tts
-  aiark_tts_voice: paul-chen-zh-tw-v1
+  voice_provider: mock
+  music_provider: mock
 
 video:
-  enabled: false
+  enabled: true
+  provider: xai_oauth
+  model: grok-imagine-video
 
 remotion:
   template_path: ./remotion-template

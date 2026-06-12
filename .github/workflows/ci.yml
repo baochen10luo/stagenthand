@@ -41,13 +41,32 @@ jobs:
           awk -v t="${COVERAGE_THRESHOLD}" -v c="${total}" 'BEGIN { if (c+0 < t+0) { print "FAIL"; exit 1 } else { print "OK" } }'
 
       - name: go build
-        run: GOTMPDIR=/tmp/gobuild go build -o /tmp/shand .
+        run: |
+          mkdir -p /tmp/gobuild
+          GOTMPDIR=/tmp/gobuild go build -o /tmp/shand .
 
       - name: smoke test — storyboard-to-remotion-props
         run: |
           cat test_storyboard.json \
             | /tmp/shand storyboard-to-remotion-props \
             | /tmp/shand remotion-render --output /tmp/test.mp4 --dry-run
+
+      - name: smoke test — xAI-native dry-run
+        run: |
+          rm -rf "$RUNNER_TEMP/xai-native-smoke"
+          OUT_DIR="$RUNNER_TEMP/xai-native-smoke" SHAND_BIN=/tmp/shand scripts/smoke-xai-native-dry-run.sh
+
+      - name: smoke test — xAI live validation gate
+        run: scripts/smoke-xai-live-validation-gate.sh
+
+      - name: upload xAI-native smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xai-native-smoke-artifacts
+          path: ${{ runner.temp }}/xai-native-smoke
+          if-no-files-found: ignore
+          retention-days: 7
 
   # ─────────────────────────────────────────────────────
   # Job 2: golangci-lint — catch code smell early

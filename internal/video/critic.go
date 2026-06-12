@@ -53,7 +53,7 @@ func compressForCritic(videoPath string) (usePath string, cleanup func(), err er
 
 // Evaluation represents the multi-dimensional scoring and feedback from the AI Critic.
 type Evaluation struct {
-	VisualScore    int    `json:"visual_score"`    // 0-10: Visual Coherence
+	VisualScore    int    `json:"visual_score"`     // 0-10: Visual Coherence
 	AudioSyncScore int    `json:"audio_sync_score"` // 0-10: Audio-Visual Sync
 	AdherenceScore int    `json:"adherence_score"`  // 0-10: Directive Adherence
 	ToneScore      int    `json:"tone_score"`       // 0-10: Narrative Tone

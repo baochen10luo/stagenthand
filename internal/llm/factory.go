@@ -2,11 +2,13 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/baochen10luo/stagenthand/config"
+	xauth "github.com/baochen10luo/stagenthand/internal/auth/xai"
 )
 
 // NewClient returns a new LLM client.
@@ -54,6 +56,10 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 						{"scene_number": 1, "panel_number": 2, "description": "mock narration panel 2", "dialogue": "", "dialogue_lines": [{"speaker": "", "text": "mock narration text 2"}], "character_refs": [], "duration_sec": 4.0, "directive": {"motion_effect": "static", "motion_intensity": 0.05, "transition_in": "fade", "transition_out": "fade", "subtitle_effect": "fade", "subtitle_position": "bottom"}}
 					]}`), nil
 				}
+				// xAI-native pipeline: story -> xAI video manifest.
+				if strings.Contains(systemPrompt, "xAI-native video pipeline") {
+					return dryRunXAIManifest(inputData), nil
+				}
 				// Default catch-all
 				return []byte(`{"status": "dry-run-ok"}`), nil
 			},
@@ -100,6 +106,25 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 			model,
 			map[string]string{"anthropic-version": "2023-06-01"},
 		), nil
+	case "xai-oauth":
+		model := "grok-4.3"
+		baseURL := ""
+		tokenPath := ""
+		if cfg != nil {
+			if cfg.XAI.Model != "" {
+				model = cfg.XAI.Model
+			} else if cfg.LLM.Model != "" {
+				model = cfg.LLM.Model
+			}
+			if cfg.XAI.BaseURL != "" {
+				baseURL = cfg.XAI.BaseURL
+			} else if cfg.LLM.BaseURL != "" {
+				baseURL = cfg.LLM.BaseURL
+			}
+			tokenPath = cfg.XAI.TokenPath
+		}
+		store := xauth.NewFileTokenStore(tokenPath)
+		return NewXAIOAuthClient(baseURL, model, xauth.NewFileTokenSource(store), nil), nil
 	case "bedrock":
 		return NewBedrockClient(
 			cfg.AWS.AccessKeyID,
@@ -110,6 +135,66 @@ func NewClient(provider string, dryRun bool, cfg *config.Config) (Client, error)
 	default:
 		return nil, fmt.Errorf("provider %s not implemented yet. Use --dry-run for testing", provider)
 	}
+}
+
+func dryRunXAIManifest(inputData []byte) []byte {
+	var req struct {
+		TargetShots int    `json:"target_shots"`
+		Format      string `json:"format"`
+	}
+	_ = json.Unmarshal(inputData, &req)
+
+	targetShots := req.TargetShots
+	if targetShots <= 0 {
+		targetShots = 1
+	}
+	format := req.Format
+	if format == "" {
+		format = "portrait"
+	}
+
+	type dryRunXAIShot struct {
+		Index         int     `json:"index"`
+		Prompt        string  `json:"prompt"`
+		DurationSec   float64 `json:"duration_sec"`
+		AspectRatio   string  `json:"aspect_ratio"`
+		Resolution    string  `json:"resolution"`
+		Subtitle      string  `json:"subtitle"`
+		TransitionOut string  `json:"transition_out"`
+	}
+	shots := make([]dryRunXAIShot, 0, targetShots)
+	for i := 1; i <= targetShots; i++ {
+		shots = append(shots, dryRunXAIShot{
+			Index:         i,
+			Prompt:        fmt.Sprintf("cinematic portrait shot %d of a robot finding a glowing flower", i),
+			DurationSec:   8,
+			AspectRatio:   "9:16",
+			Resolution:    "720p",
+			Subtitle:      fmt.Sprintf("乾跑鏡頭 %d：它在荒原裡找到一朵發光的花。", i),
+			TransitionOut: "cut",
+		})
+	}
+
+	manifest := struct {
+		ProjectID string          `json:"project_id"`
+		Format    string          `json:"format"`
+		FPS       int             `json:"fps"`
+		Width     int             `json:"width"`
+		Height    int             `json:"height"`
+		Shots     []dryRunXAIShot `json:"shots"`
+	}{
+		ProjectID: "dry-run-xai",
+		Format:    format,
+		FPS:       24,
+		Width:     720,
+		Height:    1280,
+		Shots:     shots,
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return []byte(`{"project_id":"dry-run-xai","format":"portrait","fps":24,"width":720,"height":1280,"shots":[]}`)
+	}
+	return data
 }
 
 // NewVideoCriticClient creates an LLM client capable of multi-modal video review.

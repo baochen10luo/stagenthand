@@ -7,9 +7,9 @@ import (
 func TestResolveVirtualPath(t *testing.T) {
 	home := "/home/user/.shand"
 	tests := []struct {
-		name  string
-		path  string
-		want  string
+		name string
+		path string
+		want string
 	}{
 		{
 			name: "empty path returns empty",

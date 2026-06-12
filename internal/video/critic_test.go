@@ -15,8 +15,8 @@ import (
 type mockCriticClient struct {
 	output         []byte
 	err            error
-	receivedBytes  []byte  // captures what was sent to ReviewVideo
-	receivedPrompt string  // captures the systemPrompt passed to ReviewVideo
+	receivedBytes  []byte // captures what was sent to ReviewVideo
+	receivedPrompt string // captures the systemPrompt passed to ReviewVideo
 }
 
 func (m *mockCriticClient) ReviewVideo(ctx context.Context, systemPrompt string, propsJSONData []byte, mediaType string, mediaData []byte) ([]byte, error) {

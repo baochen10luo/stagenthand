@@ -44,6 +44,24 @@ func (m *mockImageBatcher) BatchGenerateImages(_ context.Context, panels []domai
 	return result, nil
 }
 
+type mockAudioBatcher struct {
+	called bool
+}
+
+func (m *mockAudioBatcher) BatchGenerateAudio(_ context.Context, panels []domain.Panel, _ string) ([]domain.Panel, error) {
+	m.called = true
+	return panels, nil
+}
+
+type mockMusicBatcher struct {
+	called bool
+}
+
+func (m *mockMusicBatcher) GenerateProjectBGM(_ context.Context, _ string, _ string, _ string) (string, error) {
+	m.called = true
+	return "bgm.mp3", nil
+}
+
 type mockCheckpointStore struct {
 	approved bool
 }
@@ -109,6 +127,50 @@ func TestOrchestrator_DryRunSkipsImages(t *testing.T) {
 	}
 	if imgBatcher.called {
 		t.Error("dry-run: image generator should NOT be called")
+	}
+}
+
+func TestOrchestrator_SkipAssetsSkipsImageAudioAndMusic(t *testing.T) {
+	storyboardJSON := []byte(`{"project_id":"xai-video","episode":1,"scenes":[{"number":1,"description":"s"}]}`)
+	panelsJSON := []byte(`{"panels":[{"scene_number":1,"panel_number":1,"description":"p","dialogue":"line","duration_sec":3.0}]}`)
+
+	imgBatcher := &mockImageBatcher{}
+	audioBatcher := &mockAudioBatcher{}
+	musicBatcher := &mockMusicBatcher{}
+	orch := pipeline.NewOrchestrator(pipeline.OrchestratorDeps{
+		LLM:         &mockTransformer{output: panelsJSON},
+		Images:      imgBatcher,
+		Audio:       audioBatcher,
+		Music:       musicBatcher,
+		Checkpoints: &mockCheckpointStore{approved: true},
+		DryRun:      false,
+		SkipHITL:    true,
+		SkipImages:  true,
+		SkipAudio:   true,
+		SkipMusic:   true,
+	})
+
+	result, err := orch.Run(context.Background(), storyboardJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if imgBatcher.called {
+		t.Error("SkipImages: image generator should NOT be called")
+	}
+	if audioBatcher.called {
+		t.Error("SkipAudio: audio generator should NOT be called")
+	}
+	if musicBatcher.called {
+		t.Error("SkipMusic: music generator should NOT be called")
+	}
+	if result.Manifest != nil {
+		t.Error("SkipImages: manifest should stay nil because no image assets were generated")
+	}
+	if got := result.Panels[0].ImageURL; got != "" {
+		t.Errorf("ImageURL = %q, want empty", got)
+	}
+	if got := result.Panels[0].AudioURL; got != "" {
+		t.Errorf("AudioURL = %q, want empty", got)
 	}
 }
 
@@ -277,4 +339,3 @@ func TestDurationFunctionSemanticsDiffer(t *testing.T) {
 		})
 	}
 }
-

@@ -98,21 +98,24 @@ type PanelTextIssue struct {
 // OrchestratorDeps groups external dependencies injected at construction time.
 // Dependency Inversion: orchestrator only knows interfaces, never concrete types.
 type OrchestratorDeps struct {
-	LLM               Transformer
-	Images            ImageBatcher
-	Audio             AudioBatcher
-	Music             MusicBatcher
-	Checkpoints       CheckpointGate
-	PropsCritic       PropsCriticEvaluator // optional; nil = disabled
+	LLM                Transformer
+	Images             ImageBatcher
+	Audio              AudioBatcher
+	Music              MusicBatcher
+	Checkpoints        CheckpointGate
+	PropsCritic        PropsCriticEvaluator // optional; nil = disabled
 	PanelTextValidator PanelTextValidator   // optional; nil = disabled
-	Language          string               // BCP-47 language tag for TTS/dialogue
-	TargetPanels int                  // when > 0, LLM is instructed to generate exactly this many panels
-	Format       render.VideoFormat   // landscape (16:9) or portrait (9:16)
-	DryRun       bool
-	SkipHITL     bool
-	Faithful     bool // when true, LLM only splits original text — no invention
-	Verbatim     bool // when true, single-pass LLM only segments text verbatim; skips outline/storyboard stages
-	Narration    bool // when true, single-pass LLM rewrites story as narrator voice; all speaker: ""
+	Language           string               // BCP-47 language tag for TTS/dialogue
+	TargetPanels       int                  // when > 0, LLM is instructed to generate exactly this many panels
+	Format             render.VideoFormat   // landscape (16:9) or portrait (9:16)
+	DryRun             bool
+	SkipHITL           bool
+	SkipImages         bool // when true, panel descriptions are passed directly to video generation
+	SkipAudio          bool // when true, TTS generation is disabled
+	SkipMusic          bool // when true, BGM generation is disabled
+	Faithful           bool // when true, LLM only splits original text — no invention
+	Verbatim           bool // when true, single-pass LLM only segments text verbatim; skips outline/storyboard stages
+	Narration          bool // when true, single-pass LLM rewrites story as narrator voice; all speaker: ""
 }
 
 // Orchestrator coordinates the full shand pipeline:
@@ -266,10 +269,13 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	panels = applySubtitleTimings(panels)
 
 	// 3. Generate images for panels
-	if !o.deps.DryRun {
+	if !o.deps.DryRun && !o.deps.SkipImages {
 		logStage("images", fmt.Sprintf("start  panels=%d", len(panels)))
 		// Target directory for images: projects/<project_id>/images/
 		targetDir := fmt.Sprintf("projects/%s/images", projectID)
+		if o.deps.Images == nil {
+			return nil, fmt.Errorf("image stage failed: image batcher is nil")
+		}
 		panels, err = o.deps.Images.BatchGenerateImages(ctx, panels, targetDir)
 		if err != nil {
 			return nil, fmt.Errorf("image stage failed: %w", err)
@@ -278,15 +284,17 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	}
 
 	// HITL: images checkpoint
-	if err := o.checkpoint(ctx, "pipeline", domain.StageImages); err != nil {
-		return nil, err
+	if !o.deps.SkipImages {
+		if err := o.checkpoint(ctx, "pipeline", domain.StageImages); err != nil {
+			return nil, err
+		}
 	}
 
 	// Build the storyboard manifest after image generation (before audio).
 	// This captures the post-image panel state with local image paths so that
 	// rough-cut and notion-push commands can consume it without re-running images.
 	var manifest *domain.StoryboardManifest
-	if !o.deps.DryRun {
+	if !o.deps.DryRun && !o.deps.SkipImages {
 		// Strip AudioURL (not generated yet) so rough-cut regenerates TTS from Notion-edited dialogue.
 		manifestPanels := make([]domain.Panel, len(panels))
 		for i, p := range panels {
@@ -324,7 +332,7 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	}
 
 	// 4. Generate audio (TTS) for panels
-	if !o.deps.DryRun && o.deps.Audio != nil {
+	if !o.deps.DryRun && !o.deps.SkipAudio && o.deps.Audio != nil {
 		logStage("audio/TTS", "start")
 		audioDir := fmt.Sprintf("projects/%s/audio", projectID)
 		panels, err = o.deps.Audio.BatchGenerateAudio(ctx, panels, audioDir)
@@ -338,7 +346,7 @@ func (o *Orchestrator) executeFromPanels(ctx context.Context, projectID string, 
 	}
 
 	// 5. Generate BGM
-	if !o.deps.DryRun && o.deps.Music != nil {
+	if !o.deps.DryRun && !o.deps.SkipMusic && o.deps.Music != nil {
 		logStage("bgm", "start")
 		musicDir := fmt.Sprintf("projects/%s/audio", projectID)
 
@@ -476,9 +484,9 @@ func flattenScenePanels(scenes []domain.Scene) []domain.Panel {
 // while long monologues flow straight into the next panel.
 // Panels without dialogue are left untouched.
 func applyDynamicDuration(panels []domain.Panel) []domain.Panel {
-	const msPerChar = 0.12  // seconds per rune at 90% Polly neural rate
-	const baseBuffer = 3.0  // maximum buffer for very short lines
-	const minBuffer = 1.0   // minimum breathing room
+	const msPerChar = 0.12   // seconds per rune at 90% Polly neural rate
+	const baseBuffer = 3.0   // maximum buffer for very short lines
+	const minBuffer = 1.0    // minimum breathing room
 	const bufferSlope = 0.25 // how quickly buffer shrinks as speech grows
 
 	for i, p := range panels {

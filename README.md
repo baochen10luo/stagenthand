@@ -15,25 +15,14 @@
 
 ```
 Story Prompt
-  ↓ story-to-outline       (LLM)
-Outline JSON
-  ↓ outline-to-storyboard  (LLM)
-Storyboard JSON
-  ↓ storyboard-to-panels   (LLM)
-Panel[] JSON
-  ↓ panels-to-images       (Nano Banana 2 / Nova Canvas, concurrent)
-Panel[] + image_url
-  ↓ TTS                    (Amazon Polly Neural + SSML)
-Panel[] + audio_url
-  ↓ BGM                    (Jamendo API)
-  ↓ storyboard-to-remotion-props
-RemotionProps JSON
-  ↓ remotion-render        (npx remotion)
+  ↓ xAI OAuth shot plan    (LLM)
+xAI Manifest
+  ↓ xAI OAuth video shots  (grok-imagine-video)
+Shot MP4s
+  ↓ HyperFrames timeline
+Timeline MP4
+  ↓ FFmpeg finalization
 output.mp4
-  ↓ critic                 (Amazon Nova Pro, multimodal)
-APPROVE / REJECT
-  ↓ postprod loop          (optional: auto fix → rerender until APPROVE)
-Converged mp4
 ```
 
 ---
@@ -50,7 +39,8 @@ All providers are hot-swappable via config — no code changes required. Priorit
 
 | Provider | Config value | Notes |
 |---|---|---|
-| Local / self-hosted (Qwen3, vLLM, LM Studio) | `llm.provider: openai` | Default; set `base_url` to your endpoint |
+| xAI Grok OAuth | `llm.provider: xai-oauth` | Default; reuses Hermes OAuth credentials from `~/.hermes/auth.json`; no `XAI_API_KEY` |
+| Local / self-hosted (Qwen3, vLLM, LM Studio) | `llm.provider: openai` | Set `base_url` to your endpoint |
 | OpenAI | `llm.provider: openai` | Set `api_key` |
 | Google Gemini | `llm.provider: gemini` | Set `api_key` |
 | Anthropic Claude | `llm.provider: anthropic` | Set `api_key` or `ANTHROPIC_API_KEY` env |
@@ -58,7 +48,9 @@ All providers are hot-swappable via config — no code changes required. Priorit
 
 ### Image Generation
 
-Providers are swappable via `image.provider`. Returned format (PNG / JPEG / WebP) is detected automatically from magic bytes — no hardcoded format assumption.
+The default xAI OAuth video pipeline skips still-image generation. For Remotion/Nova/legacy flows, providers are swappable via `image.provider`. Returned format (PNG / JPEG / WebP) is detected automatically from magic bytes.
+
+The dedicated xAI-native rewrite plan is tracked in [`docs/xai-native-pipeline-plan.md`](docs/xai-native-pipeline-plan.md).
 
 | Provider | Config value | Notes |
 |---|---|---|
@@ -70,22 +62,22 @@ Providers are swappable via `image.provider`. Returned format (PNG / JPEG / WebP
 
 ### Text-to-Speech
 
-TTS provider is hot-swappable via `audio.voice_provider`.
+The default xAI OAuth video pipeline skips TTS. For Remotion/rough-cut flows, TTS provider is hot-swappable via `audio.voice_provider`.
 
 | Provider | Config value | Notes |
 |---|---|---|
-| Amazon Polly Neural | `voice_provider: polly` | Default; multi-language, SSML |
+| Amazon Polly Neural | `voice_provider: polly` | Multi-language, SSML |
 | aiark TTS (Qwen3-TTS) | `voice_provider: aiark` | Self-hosted; set `aiark_tts_base_url` |
 
 Multi-speaker mode (`--multi-speaker`) routes each `DialogueLine` to a per-character voice based on the character registry.
 
 ### Background Music
 
-BGM provider is hot-swappable via `audio.music_provider`.
+The default xAI OAuth video pipeline skips BGM. For Remotion/rough-cut flows, BGM provider is hot-swappable via `audio.music_provider`.
 
 | Provider | Config value |
 |---|---|
-| Jamendo | `music_provider: jamendo` (default) |
+| Jamendo | `music_provider: jamendo` |
 | aiark Music (ACE-Step) | `music_provider: aiark` |
 
 ### AI Critic
@@ -154,7 +146,7 @@ Once registered, any panel whose `characters` array includes the name will autom
 
 ### Batch Production
 
-Produce multiple episodes from a single story prompt with `--episodes N`. Episodes run concurrently up to the limit set by `--batch-concurrency` (default: 2). Each episode gets its own project directory and job ID.
+Produce multiple episodes from a single story prompt with `--episodes N`. In the xAI-native path, episodes run concurrently up to the limit set by `--batch-concurrency` (default: 2), and each episode writes to `episode_###` under the batch output directory.
 
 ### Agentic Post-Production
 
@@ -222,6 +214,78 @@ go build -o shand .
 echo "機器人找到了一朵會發光的花" | ./shand pipeline --skip-hitl
 ```
 
+### xAI-native production loop
+
+The default production path uses xAI OAuth for planning and video generation, then HyperFrames plus FFmpeg for deterministic rendering. In this path, xAI is the only model surface; HyperFrames is the timeline renderer; FFmpeg/ffprobe owns normalization, silent finalization, preview extraction, and validation. Authenticate through Hermes first:
+
+```bash
+hermes auth add xai-oauth
+./shand auth xai status
+```
+
+Use an explicit output directory so resume and inspection are deterministic:
+
+```bash
+OUT=outputs/glowing-flower
+
+echo "機器人找到了一朵會發光的花" \
+  | ./shand pipeline --skip-hitl --panels 3 --output-dir "$OUT"
+
+./shand xai inspect "$OUT" \
+  | jq '{status, project_id, shots, missing_artifacts, issues, output_video: .artifacts.output_video}'
+
+./shand xai inspect --strict "$OUT" > "$OUT/inspect.json"
+./shand xai validate "$OUT" > "$OUT/validation.json"
+```
+
+Re-run the same story and output directory to resume from a matching `xai_manifest.json` and valid cached shots:
+
+```bash
+echo "機器人找到了一朵會發光的花" \
+  | ./shand pipeline --skip-hitl --panels 3 --output-dir "$OUT"
+```
+
+Use force flags only when you intentionally want to spend new xAI calls:
+
+```bash
+# Re-plan with xAI, but still reuse unchanged valid shot videos when possible.
+echo "機器人找到了一朵會發光的花" \
+  | ./shand pipeline --skip-hitl --panels 3 --output-dir "$OUT" --force-replan
+
+# Keep the matching story manifest, but regenerate xAI shot videos.
+# Changing video.model updates video_model/prompt_hash without re-planning.
+echo "機器人找到了一朵會發光的花" \
+  | ./shand pipeline --skip-hitl --panels 3 --output-dir "$OUT" --force-regenerate
+```
+
+Expected xAI-native artifacts include `xai_manifest.json`, `xai_run_metadata.json`, `shots/shot_NNN.mp4`, `normalized/shot_NNN.mp4`, `render_metadata.json`, `preview_frame.jpg`, and final `output_xai.mp4`.
+
+`xai validate` is stricter than `xai inspect --strict`: it also runs FFmpeg/ffprobe validation and requires every shot to have persisted xAI request/status metadata from a real production generation. Both commands can inspect or validate either a single xAI-native output directory or a batch root containing `episode_###` directories.
+
+Run the no-network smoke to verify the dry-run generation path and strict inspect contract:
+
+```bash
+scripts/smoke-xai-native-dry-run.sh
+
+# Keep generated smoke artifacts for debugging.
+KEEP_SMOKE_OUTPUTS=1 scripts/smoke-xai-native-dry-run.sh
+```
+
+Run the optional live validation gate to verify existing artifacts or, when explicitly enabled, generate fresh live output. Existing-output validation is local and does not require Hermes auth; fresh generation still requires Hermes xAI OAuth credentials:
+
+```bash
+# Validate an existing xAI-native output directory without new xAI calls.
+OUT_DIR=outputs/glowing-flower scripts/validate-xai-native-live.sh
+
+# Generate a fresh live output, then inspect and validate it.
+RUN_XAI_LIVE_VALIDATION=1 OUT_DIR=outputs/live-check PANELS=3 scripts/validate-xai-native-live.sh
+
+# Generate and validate a fresh batch output. The live gate defaults batch concurrency to 1.
+RUN_XAI_LIVE_VALIDATION=1 OUT_DIR=outputs/live-batch PANELS=1 EPISODES=2 BATCH_CONCURRENCY=1 scripts/validate-xai-native-live.sh
+```
+
+GitHub Actions also includes a manual `xAI Native Live Validation` workflow. Configure repository secret `HERMES_AUTH_JSON_B64` as a base64-encoded copy of `~/.hermes/auth.json`; if the secret is absent, the workflow skips without spending xAI calls.
+
 ### Resume from existing panels
 
 ```bash
@@ -256,25 +320,30 @@ aws:
   region: us-east-1
 
 llm:
-  provider: openai           # openai | gemini | anthropic | bedrock
-  model: ""                  # empty = provider default (gpt-4o / gemini-2.5-pro / etc.)
+  provider: xai-oauth        # xai-oauth | openai | gemini | anthropic | bedrock
+  model: grok-4.3
   api_key: ""
   base_url: ""               # any OpenAI-compatible endpoint; empty = official API
   no_json_mode: false        # set true for servers that don't support response_format:json
   strip_think_tags: false    # set true for reasoning models (Qwen3, QwQ) that emit <think>
 
+xai_oauth:
+  model: grok-4.3
+  base_url: https://api.x.ai/v1
+  token_path: ~/.hermes/auth.json
+
 image:
-  provider: nanobanana        # nanobanana | aiark | bedrock | stability
+  provider: mock              # default xAI video flow skips still images
   api_key: ""
   base_url: ""               # for aiark self-hosted
   model: ""                  # for bedrock: amazon.nova-canvas-* or amazon.titan-image-*
-  width: 1024
-  height: 576
+  width: 576
+  height: 1024
   region: ""                 # image-specific region override (defaults to aws.region)
 
 audio:
-  voice_provider: polly       # polly | aiark
-  music_provider: jamendo     # jamendo | aiark
+  voice_provider: mock        # default xAI video flow skips TTS
+  music_provider: mock        # default xAI video flow skips BGM
   jamendo_client_id: ""
   # aiark TTS (self-hosted Qwen3-TTS):
   # aiark_tts_base_url: ""
@@ -282,11 +351,12 @@ audio:
   # aiark_tts_voice: ""
 
 critic:
-  provider: bedrock           # bedrock (default); future: anthropic, gemini
+  provider: bedrock           # optional; currently bedrock
   model: ""                   # empty = amazon.nova-pro-v1:0
 
 video:
-  provider: remotion          # remotion | nova_reel | grok_browser | hyperframes
+  provider: xai_oauth         # xai_oauth (or xai-oauth alias) | remotion | nova_reel | grok_browser (deprecated) | hyperframes
+  model: grok-imagine-video   # used by xai_oauth
   s3_bucket: ""               # required for nova_reel
   region: ""                  # video-specific region override
 
@@ -327,6 +397,8 @@ All commands read JSON from stdin and write JSON to stdout unless noted. Use `--
 | `shand checkpoint reject <id>` | Reject a checkpoint |
 | `shand checkpoint wait <id>` | Poll until checkpoint resolves |
 | `shand status <job-id>` | Query job status |
+| `shand xai inspect <output-dir>` | Summarize xAI-native artifacts as JSON |
+| `shand xai validate <output-dir>` | Validate xAI-native production output with inspect, ffprobe, and request metadata checks |
 | `shand character list` | List all registered character reference images |
 | `shand character show <name>` | Show character reference details |
 | `shand character generate <name>` | Generate + register a reference sheet via image provider |
@@ -342,21 +414,28 @@ All commands read JSON from stdin and write JSON to stdout unless noted. Use `--
 |---|---|---|
 | `--dry-run` | All commands | Skip external API calls, return mock JSON |
 | `--skip-hitl` | `pipeline` | Disable all 4 HITL pause points |
+| `--output-dir <path>` | `pipeline` | xAI-native output directory; use the same path to resume |
 | `--output <path>` | `remotion-render` | Output MP4 path |
 | `--video <path>` | `critic` | Path to rendered MP4 |
 | `--props <path>` | `critic` | Path to `remotion_props.json` |
 | `--config <path>` | All commands | Override default config file path |
 | `--language` | `pipeline` | TTS language code (default: zh-TW) |
 | `--max-retries` | `pipeline` | AI Critic auto-retry count (default: 0) |
-| `--episodes N` | `pipeline` | Produce N episodes in batch |
+| `--episodes N` | `pipeline` | xAI-native batch; writes each episode under `episode_###` |
 | `--batch-concurrency` | `pipeline` | Max concurrent episodes (default: 2) |
 | `--max-iterations` | `postprod loop` | Max postprod loop iterations (default: 3) |
 | `--faithful` | `pipeline` | LLM only splits original text, no invention |
 | `--verbatim` | `pipeline` | Single-pass LLM: segment text verbatim, skip outline/storyboard |
 | `--narration` | `pipeline` | Single-pass LLM: rewrite as narrator voice, all speaker: "" |
 | `--multi-speaker` | `pipeline` | Per-character voice routing via character registry |
-| `--format portrait` | `pipeline` | Vertical 9:16 video (TikTok / Reels / Shorts) |
-| `--video-backend` | `pipeline` | Video renderer: remotion \| nova_reel \| grok_browser \| hyperframes |
+| `--format portrait` | `pipeline` | Vertical 9:16 video (TikTok / Reels / Shorts); default |
+| `--panels N` | `pipeline` | xAI-native maps N panels one-to-one to N xAI video shots |
+| `--force-replan` | `pipeline` | xAI-native: ignore matching manifest and call xAI planning again |
+| `--force-regenerate` | `pipeline` | xAI-native: regenerate shot videos even when cached shots are valid |
+| `--video-backend` | `pipeline` | Video renderer: xai_oauth / xai-oauth \| remotion \| nova_reel \| grok_browser (deprecated) \| hyperframes |
+| `--skip-llm` | `pipeline` | Legacy `remotion_props.json` reuse; rejected by `xai_oauth`, use the same `--output-dir` for xAI-native resume |
+| `--image-dir`, `--i2v` | `pipeline` | Legacy asset/I2V inputs; rejected by `xai_oauth`, use an explicit non-xAI legacy backend |
+| `--strict` | `xai inspect` | Exit non-zero unless inspected xAI-native output is complete |
 
 ---
 
@@ -368,7 +447,7 @@ SOLID-based layered architecture. The `cmd/` layer is thin: IO only, no business
 cmd/                   Thin layer: IO + dependency injection
 internal/
   domain/              Pure data structs, zero external dependencies
-  llm/                 Client interface + factory (openai-compat / bedrock / anthropic / mock)
+  llm/                 Client interface + factory (openai-compat / bedrock / anthropic / xai-oauth / mock)
                        VideoCriticClient interface + NewVideoCriticClient factory
   image/               Client interface + factory (aiark / nanobanana / bedrock / stability / mock)
   audio/               Client interface + factory (polly / aiark-tts / mock)

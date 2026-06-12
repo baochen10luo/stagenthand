@@ -2,11 +2,17 @@ package llm_test
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/baochen10luo/stagenthand/config"
+	xauth "github.com/baochen10luo/stagenthand/internal/auth/xai"
 	"github.com/baochen10luo/stagenthand/internal/llm"
 	"github.com/baochen10luo/stagenthand/internal/pipeline"
+	"github.com/baochen10luo/stagenthand/internal/xaipipeline"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -107,6 +113,64 @@ func TestNewClient(t *testing.T) {
 		assert.ErrorContains(t, err, "aws_secret_access_key is required")
 		assert.Nil(t, client)
 	})
+
+	t.Run("xai oauth provider", func(t *testing.T) {
+		xaiCfg := &config.Config{
+			LLM: config.LLMConfig{
+				Provider: "xai-oauth",
+			},
+			XAI: config.XAIConfig{
+				Model:     "grok-4.3",
+				BaseURL:   "https://api.x.ai/v1",
+				TokenPath: "/tmp/xai-auth.json",
+			},
+		}
+		client, err := llm.NewClient("xai-oauth", false, xaiCfg)
+		assert.NoError(t, err)
+		_, ok := client.(*llm.XAIOAuthClient)
+		assert.True(t, ok)
+	})
+}
+
+func TestNewClient_XAIOAuthUsesProviderSpecificModel(t *testing.T) {
+	t.Parallel()
+
+	tokenPath := filepath.Join(t.TempDir(), "xai.json")
+	store := xauth.NewFileTokenStore(tokenPath)
+	assert.NoError(t, store.Save(xauth.Token{
+		AccessToken: "oauth-access",
+		TokenType:   "Bearer",
+	}))
+
+	var capturedModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer oauth-access", r.Header.Get("Authorization"))
+		var body map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		capturedModel, _ = body["model"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output_text": `{"ok":true}`,
+		})
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Model: "aiark/qwen36-35b-a3b",
+		},
+		XAI: config.XAIConfig{
+			Model:     "grok-4.3",
+			BaseURL:   server.URL + "/v1",
+			TokenPath: tokenPath,
+		},
+	}
+	client, err := llm.NewClient("xai-oauth", false, cfg)
+	assert.NoError(t, err)
+
+	got, err := client.GenerateTransformation(t.Context(), "Return JSON only.", []byte(`{}`))
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"ok":true}`, string(got))
+	assert.Equal(t, "grok-4.3", capturedModel)
 }
 
 // TestNewClient_MockDryRunBehavior checks the mock client returned by dry-run
@@ -140,6 +204,11 @@ func TestNewClient_MockDryRunBehavior(t *testing.T) {
 			wantSubstring: "panels",
 		},
 		{
+			name:          "PromptStoryToXAIManifest returns shots field",
+			systemPrompt:  xaipipeline.PromptStoryToXAIManifest,
+			wantSubstring: "shots",
+		},
+		{
 			name:          "unknown prompt returns dry-run-ok default",
 			systemPrompt:  "some random prompt",
 			wantSubstring: "dry-run-ok",
@@ -157,12 +226,37 @@ func TestNewClient_MockDryRunBehavior(t *testing.T) {
 	}
 }
 
+func TestNewClient_MockDryRunXAIManifestHonorsTargetShots(t *testing.T) {
+	t.Parallel()
+
+	client, err := llm.NewClient("xai-oauth", true, nil)
+	assert.NoError(t, err)
+
+	res, err := client.GenerateTransformation(context.Background(), xaipipeline.PromptStoryToXAIManifest, []byte(`{
+		"story": "機器人找到花",
+		"target_shots": 3,
+		"format": "portrait"
+	}`))
+	assert.NoError(t, err)
+
+	var manifest xaipipeline.Manifest
+	assert.NoError(t, json.Unmarshal(res, &manifest))
+	if assert.Len(t, manifest.Shots, 3) {
+		for i, shot := range manifest.Shots {
+			assert.Equal(t, i+1, shot.Index)
+			assert.NotEmpty(t, shot.Prompt)
+			assert.Equal(t, "9:16", shot.AspectRatio)
+			assert.Equal(t, "720p", shot.Resolution)
+		}
+	}
+}
+
 // TestNewClient_DryRunFlag verifies that dryRun=true always returns MockClient
 // regardless of the provider name.
 func TestNewClient_DryRunFlag(t *testing.T) {
 	t.Parallel()
 
-	providers := []string{"openai", "gemini", "bedrock", "unknown", "nova"}
+	providers := []string{"openai", "gemini", "bedrock", "unknown", "nova", "xai-oauth"}
 	for _, p := range providers {
 		p := p
 		t.Run("dryRun with provider "+p, func(t *testing.T) {

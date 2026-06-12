@@ -128,6 +128,10 @@ func printConfigStatusWithCfg(profile string, c *appconfig.Config) error {
 	fmt.Printf("image.provider: %s\n", c.Image.Provider)
 	fmt.Printf("audio.voice:    %s\n", voiceProviderLabel(c.Audio.VoiceProvider))
 	fmt.Printf("audio.music:    %s\n", musicProviderLabel(c.Audio.MusicProvider))
+	fmt.Printf("video.provider: %s\n", c.Video.Provider)
+	if c.Video.Model != "" {
+		fmt.Printf("video.model:    %s\n", c.Video.Model)
+	}
 	return nil
 }
 

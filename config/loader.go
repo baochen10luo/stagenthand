@@ -14,6 +14,7 @@ import (
 type Config struct {
 	LLM      LLMConfig      `mapstructure:"llm"`
 	AWS      AWSConfig      `mapstructure:"aws"`
+	XAI      XAIConfig      `mapstructure:"xai_oauth"`
 	Critic   CriticConfig   `mapstructure:"critic"`
 	Image    ImageConfig    `mapstructure:"image"`
 	Audio    AudioConfig    `mapstructure:"audio"`
@@ -34,6 +35,13 @@ type AWSConfig struct {
 	Region          string `mapstructure:"region"`
 }
 
+// XAIConfig holds xAI OAuth settings.
+type XAIConfig struct {
+	Model     string `mapstructure:"model"`
+	BaseURL   string `mapstructure:"base_url"`
+	TokenPath string `mapstructure:"token_path"`
+}
+
 // CriticConfig holds settings for the AI video critic, which may use a different
 // provider or model than the main generation LLM.
 type CriticConfig struct {
@@ -47,7 +55,7 @@ type LLMConfig struct {
 	Model          string `mapstructure:"model"`
 	APIKey         string `mapstructure:"api_key"`
 	BaseURL        string `mapstructure:"base_url"`
-	NoJSONMode     bool   `mapstructure:"no_json_mode"` // disable response_format:json_object (for servers that don't support it)
+	NoJSONMode     bool   `mapstructure:"no_json_mode"`     // disable response_format:json_object (for servers that don't support it)
 	StripThinkTags bool   `mapstructure:"strip_think_tags"` // strip <think>...</think> from responses (for reasoning models)
 	// AWS Bedrock specific
 	AWSAccessKeyID     string `mapstructure:"aws_access_key_id"`
@@ -88,6 +96,7 @@ type VideoConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
 	Provider string `mapstructure:"provider"` // "remotion" | "nova_reel"
 	APIKey   string `mapstructure:"api_key"`
+	Model    string `mapstructure:"model"`
 	// Nova Reel specific
 	S3Bucket string `mapstructure:"s3_bucket"`
 	Region   string `mapstructure:"region"`
@@ -126,19 +135,24 @@ func Load(cfgFile string) (*Config, error) {
 	v := viper.New()
 
 	// Defaults
-	v.SetDefault("llm.provider", "openai-compat")
-	v.SetDefault("llm.model", "aiark/qwen36-35b-a3b")
+	v.SetDefault("llm.provider", "xai-oauth")
+	v.SetDefault("llm.model", "grok-4.3")
 	v.SetDefault("llm.aws_region", "us-east-1")
-	v.SetDefault("image.provider", "nanobanana")
-	v.SetDefault("image.model", "amazon.titan-image-generator-v2:0")
+	v.SetDefault("xai_oauth.model", "grok-4.3")
+	v.SetDefault("xai_oauth.base_url", "https://api.x.ai/v1")
+	v.SetDefault("xai_oauth.token_path", "~/.hermes/auth.json")
+	v.SetDefault("image.provider", "mock")
+	v.SetDefault("image.model", "")
 	v.SetDefault("image.region", "us-west-2")
-	v.SetDefault("image.width", 1024)
-	v.SetDefault("image.height", 576)
-	v.SetDefault("video.enabled", false)
-	v.SetDefault("video.provider", "grok")
+	v.SetDefault("image.width", 576)
+	v.SetDefault("image.height", 1024)
+	v.SetDefault("video.enabled", true)
+	v.SetDefault("video.provider", "xai_oauth")
+	v.SetDefault("video.model", "grok-imagine-video")
 	v.SetDefault("remotion.composition", "ShortDrama")
 	v.SetDefault("store.db_path", "~/.shand/shand.db")
-	v.SetDefault("audio.music_provider", "jamendo")
+	v.SetDefault("audio.voice_provider", "mock")
+	v.SetDefault("audio.music_provider", "mock")
 	v.SetDefault("server.port", 28080)
 
 	// Env vars: SHAND_LLM_PROVIDER, SHAND_IMAGE_API_KEY, ...
