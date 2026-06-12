@@ -66,19 +66,35 @@ video_filter="tpad=stop_mode=clone:stop_duration=${pad_duration},setpts=PTS-STAR
 if [[ -n "$subtitle_file" ]]; then
   video_filter="subtitles=filename=${subtitle_file},${video_filter}"
 fi
+timeline_audio_count="$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$timeline" | wc -l | tr -d ' ')"
 
-ffmpeg -hide_banner -y \
-  -i "$timeline" \
-  -i "$audio_path" \
-  -filter_complex "[0:v]${video_filter}[v]" \
-  -map "[v]" \
-  -map 1:a \
-  -c:v libx264 \
-  -pix_fmt yuv420p \
-  -c:a aac \
-  -b:a 128k \
-  -movflags +faststart \
-  "$final_path"
+if [[ "${timeline_audio_count:-0}" -gt 0 ]]; then
+  ffmpeg -hide_banner -y \
+    -i "$timeline" \
+    -i "$audio_path" \
+    -filter_complex "[0:v]${video_filter}[v];[0:a]volume=0.18[bed];[1:a]volume=1.0[dub];[bed][dub]amix=inputs=2:duration=longest:dropout_transition=0[a]" \
+    -map "[v]" \
+    -map "[a]" \
+    -c:v libx264 \
+    -pix_fmt yuv420p \
+    -c:a aac \
+    -b:a 128k \
+    -movflags +faststart \
+    "$final_path"
+else
+  ffmpeg -hide_banner -y \
+    -i "$timeline" \
+    -i "$audio_path" \
+    -filter_complex "[0:v]${video_filter}[v]" \
+    -map "[v]" \
+    -map 1:a \
+    -c:v libx264 \
+    -pix_fmt yuv420p \
+    -c:a aac \
+    -b:a 128k \
+    -movflags +faststart \
+    "$final_path"
+fi
 
 ffmpeg -hide_banner -y \
   -ss 00:00:10 \

@@ -1,12 +1,12 @@
 ---
 name: xai-static-voice-video
-description: Create voiced static story videos in StagentHand with Grok xAI OAuth image generation/editing, character reference sheets for consistency, xAI OAuth TTS, HyperFrames timelines, FFmpeg final muxing, preview extraction, and ffprobe validation. Use when the user wants a rough-cut/static-image video with voice, no SVG-drawn art, no Remotion, no local TTS/model, no i2v, and xAI OAuth as the only AI provider.
+description: Create voiced static or I2V story videos in StagentHand with Grok xAI OAuth image generation/editing, character reference sheets for consistency, xAI OAuth TTS, optional xAI Image-to-Video, HyperFrames timelines, FFmpeg final muxing, preview extraction, and ffprobe validation. Use when the user wants a rough-cut/static-image video or an I2V upgrade with voice, no SVG-drawn art, no Remotion, no local TTS/model, and xAI OAuth as the only AI provider.
 ---
 
 # xAI Static Voice Video
 
-Use this skill for static visual rough cuts that need Grok-generated stills and
-xAI OAuth voice.
+Use this skill for static visual rough cuts and I2V upgrades that need
+Grok-generated stills, optional Grok Image-to-Video, and xAI OAuth voice.
 
 ## Contract
 
@@ -15,15 +15,39 @@ xAI OAuth voice.
 - Generate character sheets before scene stills. Treat character sheets as the
   source of truth for character appearance.
 - Generate scene stills from prompts plus character/style reference images.
-- Use a newly rendered HyperFrames silent timeline as the video source.
+- For static rough cuts, use a newly rendered HyperFrames still-image timeline
+  as the video source.
+- For I2V upgrades, use the audited still as the first frame/source image for
+  `shand xai video i2v`; do not ask I2V to redesign the scene.
 - Generate narration/dialogue audio with `shand xai voice probe`.
 - Do not use Remotion, local TTS, Polly, Qwen, or browser automation.
 - Add visible subtitles with an ASS subtitle file when the rough cut has voice.
 - Run an xAI OAuth vision audit on generated stills before final packaging.
+- Audit animal anatomy explicitly. Regenerate any still or I2V clip with extra
+  arms, six hands, duplicated forelegs, fused limbs, malformed hooves, or other
+  impossible limb counts.
 - Use FFmpeg for muxing/final packaging and `ffprobe` for validation.
+- Preserve original video audio when present, but lower it under the xAI voice
+  track.
 - Keep outputs under `outputs/<slug>/`.
 - Use meaningful final filenames, for example
   `<story-slug>-grok-ref-xai-voice-v1.mp4`.
+
+## Subtitle Rules
+
+- Avoid Chinese punctuation in rendered subtitles: `，。？！、；：`.
+- Prefer short subtitle lines over long complete sentences.
+- Keep each subtitle visible for at least about 1.5 seconds.
+- Target Chinese reading speed around 6 characters per second.
+- Do not translate or rewrite proper nouns unnecessarily, for example OpenCL,
+  Linux, and Fable.
+- Dubbing/subtitle timing may lag behind the source video slightly, like
+  synchronized interpretation.
+- If the dubbing is longer than the picture track, extend the video by freezing
+  the final frame.
+- If the source video has audio, keep it as low-volume bed audio and overlay
+  the dubbed voice.
+- In HITL review, the `字幕：` field is the main final human-edit entry point.
 
 ## Workflow
 
@@ -43,7 +67,7 @@ xAI OAuth voice.
    OAuth vision-capable model and check story fit, character consistency,
    spatial relationships, unwanted text/speech bubbles, and whether phone-call
    scenes are cross-cut instead of showing separated callers physically
-   together.
+   together. It must also check animal anatomy and reject extra limbs/hands.
 8. Run `scripts/render_static_voice_video.sh` to create xAI voice and mux
    audio. `build_still_timeline.js` automatically overlays
    `outputs/<slug>/subtitles.ass` into the HyperFrames timeline when that file
@@ -56,6 +80,21 @@ xAI OAuth voice.
    - AAC audio
    - duration long enough for the xAI voice track
 10. Inspect `preview_frame.jpg`.
+
+## I2V Upgrade Workflow
+
+Use this only after the static stills pass story and anatomy audit.
+
+1. Treat each approved still as the source image and first frame.
+2. Generate one short I2V clip per still with `shand xai video i2v`.
+3. Prompts should request small motion only: breathing, blinking, hand/phone
+   micro-movement, slight camera drift, and forest light movement. Include
+   "preserve the exact first frame composition" and "no extra limbs or hands".
+4. Build a HyperFrames video timeline from the I2V clips. Keep the existing
+   `subtitles.ass` rules.
+5. If I2V clips contain native audio, keep it low under the xAI voice track.
+6. Validate with ffprobe and extract preview frames from dialogue/punchline
+   moments.
 
 ## Script
 
@@ -70,6 +109,19 @@ Generate a HyperFrames timeline from Grok stills:
 
 cd outputs/my-video/hyperframes
 npx --yes hyperframes@0.6.55 render --output ../timeline_hyperframes.mp4 --fps 24
+```
+
+Build a HyperFrames timeline from I2V clips:
+
+```bash
+.agents/skills/xai-static-voice-video/scripts/build_video_timeline.js \
+  outputs/my-video \
+  outputs/my-video/i2v/scene_001.mp4:4 \
+  outputs/my-video/i2v/scene_002.mp4:4 \
+  outputs/my-video/i2v/scene_003.mp4:4
+
+cd outputs/my-video/hyperframes_i2v
+npx --yes hyperframes@0.6.55 render --output ../timeline_i2v_hyperframes.mp4 --fps 24
 ```
 
 Render the final voice mux from the repository root:
@@ -118,6 +170,14 @@ shand xai image audit-story \
   --scene outputs/my-video/stills/scene_004.png \
   --scene outputs/my-video/stills/scene_005.png \
   --output outputs/my-video/audit_xai.json
+
+shand xai video i2v \
+  --image outputs/my-video/stills/scene_001.png \
+  --prompt "Preserve the exact first frame composition. Gentle storybook motion, slow camera drift, subtle breathing and forest light. No text. No extra limbs or hands." \
+  --duration 4 \
+  --aspect-ratio 9:16 \
+  --resolution 720p \
+  --output outputs/my-video/i2v/scene_001.mp4
 ```
 
 ## Notes
